@@ -83,6 +83,11 @@
 
 9. **`tools/probe/` — 調査用プローブの同梱**
    - `0xe7` の応答時間、キャッシュ番地、スクランブル seed、fast方式の検証用 Python(SPTI) スクリプト
+   - 追加: USB接続速度（`usb_speed.py`）、READ/E7 レイテンシとブロック内訳（`bench.py` / `probe_timing.py`）、
+     キャッシュ窓・整列（`probe_cache.py` / `probe_alignment.py`）、速度/モード掃引（`probe_speed_modes.py`）、
+     窓移動（`probe_invalidate.py`）、非同期重畳（`probe_async.py`）、CAV・総コスト（`probe_profile.py` / `probe_total.py`）、
+     通常DVDでの切り分け（`probe_normal.py` / `probe_normal2.py`）、GCのREADサイズ・単発READ挙動
+     （`probe_gc_size.py` / `probe_gc_seq.py` / `probe_gc_force.py`）、メディア取りこぼし切り分け（`probe_drop.py`）
    - 詳細は `tools/probe/README.md`（実行時は DIC 等ドライブ使用ツールを停止すること）
 
 ## 既知の制限・注意
