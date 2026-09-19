@@ -117,6 +117,20 @@
   （MT1959系Blu-ray + OmniDrive / 中古 LG GDR-8164B・GDR-8082 + UDMA ブリッジ 等）
 
 
+## 次回対応予定
+
+- **GCC-4241N / GCC-4242N（DIC の 0xe7 Type2_1 / Type2_2）は未対応**
+  - DIC（`execScsiCmdforDVD.cpp`）では Type2 は `baseAddr≒0x80000000` を
+    `0x2040`（= 4セクタ × 2064B）ずつ回転させ、**4セクタ単位の E7** で 1 ブロックを読む方式
+  - 本forkは Type1（`0xA13000` / `method12`）と Type4/3 相当（`0x80000000` 固定 / `method9` 系）のみ実装。
+    GCC-4241N/4242N は `dvd_is_hitachi_family` に含まれるが `0x80000000 + method9` に割り当てられ、
+    実際の Type2 配置と食い違うため正しく読めない
+  - 対応する場合: Type2 用の読み出し（4セクタ E7・回転ベース）を追加し、**実機で配置を実測**、
+    EDC 検証で誤り率を定量化する必要がある
+  - 注意: DIC 公式 README は 4241N/4242N について「吸い出せるが many errors occurred」と明記
+  - 予定: 安価（≤1000円）に入手可能なため、実機でキャッシュ配置を実測してから Type2 対応を検討（未着手）
+
+
 ## ビルド
 
 ```bash

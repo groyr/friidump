@@ -329,6 +329,9 @@ static bool dvd_is_hitachi_family (const char *vendor, const char *prod_id) {
 static void dvd_assign_functions (dvd_drive *dvd, u_int32_t command) {
 	dvd -> def_method = 0;
 	if (dvd_is_hitachi_family (dvd -> vendor, dvd -> prod_id)) {
+		/* TODO(次回): GCC-4241N/4242N は DIC の 0xe7 Type2_1/2_2（0x80000000 回転ベース・4セクタE7）。
+		 * 現在は 0x80000000 固定 + method9 に割り当てており、実際の配置と食い違うため正しく読めない。
+		 * 実機でキャッシュ配置を確認後に Type2 対応する（詳細は PATCHES.md の「次回対応予定」）。 */
 		/* GCC-4160N / GCC-4240N はデータフレームが 0xA13000 に載る (DIC の Type1 相当)。
 		 * それ以外の MN103 系は従来の 0x80000000 ベースを使う。 */
 		if (strstr (dvd -> prod_id, "GCC-4160N") != NULL || strstr (dvd -> prod_id, "GCC-4240N") != NULL) {
