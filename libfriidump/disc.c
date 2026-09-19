@@ -117,6 +117,12 @@ struct disc_s {
 	 * 位相 m はブロック番号 mod 16。 */
 	bool fast_ready;
 	u_int8_t fast_corr[16][2042];
+
+	/* method12(rawマスター+EDC) 用。
+	 * drive_cipher[m][i] = raw[12+i] XOR host[i]（ドライブ逆スクランブル鍵そのもの）。
+	 * これで host データから生フレーム raw[12:2060] を復元できる。 */
+	bool fast12_ready;
+	u_int8_t drive_cipher12[16][2048];
 };
 
 
@@ -181,6 +187,24 @@ void disc_cache_add_block (disc *d, u_int32_t block, u_int8_t *data, u_int8_t *r
 	d -> cache_map[pos] = block;
 
 	cachedebug ("Cached block %u (sectors %u-%u) at position %u", block, block * SECTORS_PER_BLOCK, (block + 1) * SECTORS_PER_BLOCK - 1, pos);
+
+	return;
+}
+
+
+/*! \brief 生フレームをそのまま（真スクランブル像のまま）キャッシュへ格納する。
+ *
+ * disc_cache_add_block() は GC の場合 rawdata[6:2054] を復号済みデータで上書きするため、
+ * DIC/redump 互換の生rawを保存したい method12 ではこちらを使う。 */
+static void disc_cache_add_block_raw (disc *d, u_int32_t block, u_int8_t *data, u_int8_t *rawtrue) {
+	u_int32_t pos;
+
+	pos = block % d -> cache_size;
+	memcpy (d -> cache[pos], data, BLOCK_SIZE);
+	memcpy (d -> raw_cache[pos], rawtrue, RAW_BLOCK_SIZE);
+	d -> cache_map[pos] = block;
+
+	cachedebug ("Cached block %u (raw, true scramble) at position %u", block, pos);
 
 	return;
 }
@@ -759,8 +783,8 @@ static int disc_read_sector_10 (disc *d, u_int32_t sector_no, u_int8_t **data, u
  */
 
 /* 1 ブロックを mn103s の raw 経路で読み、host データ(rd)と復号済みデータ(P)を返す。
- * READ は 2 回必要（1 回目は吸収される）。 */
-static bool disc_fast_read_raw_block (disc *d, u_int32_t blk, u_int8_t *rd, u_int8_t *P) {
+ * READ は 2 回必要（1 回目は吸収される）。rawout が非 NULL なら生フレームもコピーする。 */
+static bool disc_fast_read_raw_block (disc *d, u_int32_t blk, u_int8_t *rd, u_int8_t *rawout, u_int8_t *P) {
 	static u_int8_t rawbuf[RAW_BLOCK_SIZE];
 	u_int32_t lba = blk * SECTORS_PER_BLOCK;
 	int retry;
@@ -784,6 +808,9 @@ static bool disc_fast_read_raw_block (disc *d, u_int32_t blk, u_int8_t *rd, u_in
 		}
 		if (!ok)
 			continue;
+		/* rawout には unscramble 前の生フレーム（真スクランブル像）を返す */
+		if (rawout)
+			memcpy (rawout, rawbuf, RAW_BLOCK_SIZE);
 		if (!unscrambler_unscramble_16sectors (d -> u, lba, rawbuf, P))
 			continue;
 		return (true);
@@ -802,7 +829,7 @@ static bool disc_fast_calibrate (disc *d) {
 
 	for (m = 0; m < 16; m++) {
 		u_int32_t k, i;
-		if (!disc_fast_read_raw_block (d, 16 + m, rd, P)) {
+		if (!disc_fast_read_raw_block (d, 16 + m, rd, NULL, P)) {
 			error ("fast calibration failed at block %d", 16 + m);
 			return (false);
 		}
@@ -827,7 +854,7 @@ static int disc_read_sector_11 (disc *d, u_int32_t sector_no, u_int8_t **data, u
 
 	/* block0 は seed が例外なので raw 経路で読む */
 	if (blk == 0) {
-		if (!disc_fast_read_raw_block (d, 0, rd, out)) {
+		if (!disc_fast_read_raw_block (d, 0, rd, NULL, out)) {
 			error ("fast read failed at block 0");
 			return (false);
 		}
@@ -843,6 +870,8 @@ static int disc_read_sector_11 (disc *d, u_int32_t sector_no, u_int8_t **data, u
 		int m = blk % 16;
 		bool ok = true;
 
+		/* READ は 2 回必要（1 回目は吸収される）。PREFETCH(0x34) は
+		 * 本ドライブで ILLEGAL REQUEST のため使わず、常に READ×2 とする。 */
 		if (dvd_read_sector_streaming (d -> dvd, lba, NULL, NULL, 0) < 0) { ok = false; continue; }
 		if (dvd_read_sector_streaming (d -> dvd, lba, NULL, rd, BLOCK_SIZE) < 0) { ok = false; continue; }
 
@@ -866,11 +895,118 @@ static int disc_read_sector_11 (disc *d, u_int32_t sector_no, u_int8_t **data, u
 	}
 
 	warning ("fast read failed for block %u, falling back to raw", blk);
-	if (disc_fast_read_raw_block (d, blk, rd, out)) {
+	if (disc_fast_read_raw_block (d, blk, rd, NULL, out)) {
 		disc_cache_add_block (d, blk, out, rawbuf);
 		return (true);
 	}
 	error ("fast read failed at block %u", blk);
+	return (false);
+}
+
+
+/* ---------- method12: rawマスター + 全ブロックEDC検証 ----------
+ * method11 と同じく host データ(rd)から fast 復号するが、加えて
+ *   ・E7 で各セクタの生フレーム先頭12B(raw[0:12])と末尾10B(raw[2054:2064])を取得
+ *   ・raw[12:2060] = rd XOR drive_cipher12[位相] で復元
+ * して生フレームを組み立て、unscrambler に渡して EDC 検証する。
+ * これにより raw をマスターとして保存でき、かつ全ブロックを EDC で検証できる。
+ * 速度は E7 が 1→2 回/セクタに増える分だけ method11 より僅かに遅い。 */
+
+/* 代表 16 ブロック(16..31)から drive_cipher12 を作る */
+static bool disc_fast_calibrate12 (disc *d) {
+	static u_int8_t rd[BLOCK_SIZE];
+	static u_int8_t rawb[RAW_BLOCK_SIZE];
+	static u_int8_t P[BLOCK_SIZE];
+	int m;
+
+	if (d -> fast12_ready)
+		return (true);
+
+	for (m = 0; m < 16; m++) {
+		u_int32_t k, i;
+		if (!disc_fast_read_raw_block (d, 16 + m, rd, rawb, P)) {
+			error ("method12 calibration failed at block %d", 16 + m);
+			return (false);
+		}
+		for (k = 0; k < SECTORS_PER_BLOCK; k++)
+			for (i = 0; i < SECTOR_SIZE; i++)
+				d -> drive_cipher12[m][i] = rd[k * SECTOR_SIZE + i] ^ rawb[k * RAW_SECTOR_SIZE + 12 + i];
+	}
+	d -> fast12_ready = true;
+	debug ("method12 calibration done (16 phases)");
+	return (true);
+}
+
+static int disc_read_sector_12 (disc *d, u_int32_t sector_no, u_int8_t **data, u_int8_t **rawdata) {
+	static u_int8_t rd[BLOCK_SIZE];
+	static u_int8_t rawb[RAW_BLOCK_SIZE];
+	static u_int8_t rawtrue[RAW_BLOCK_SIZE];
+	static u_int8_t out[BLOCK_SIZE];
+	u_int32_t blk = sector_no / SECTORS_PER_BLOCK;
+	u_int32_t lba = blk * SECTORS_PER_BLOCK;
+	int retry;
+
+	/* block0 は seed が例外なので raw 経路（EDC検証つき）で読む */
+	if (blk == 0) {
+		if (!disc_fast_read_raw_block (d, 0, rd, rawtrue, out)) {
+			error ("method12 read failed at block 0");
+			return (false);
+		}
+		disc_cache_add_block_raw (d, 0, out, rawtrue);
+		return (true);
+	}
+
+	if (!disc_fast_calibrate12 (d))
+		return (false);
+
+	for (retry = 0; retry < 5; retry++) {
+		u_int32_t k, i;
+		int m = blk % 16;
+		bool ok = true;
+
+		if (dvd_read_sector_streaming (d -> dvd, lba, NULL, NULL, 0) < 0)
+			continue;
+		if (dvd_read_sector_streaming (d -> dvd, lba, NULL, rd, BLOCK_SIZE) < 0)
+			continue;
+
+		memset (rawb, 0, RAW_BLOCK_SIZE);
+		for (k = 0; k < SECTORS_PER_BLOCK; k++) {
+			u_int8_t head[12], tail[10];
+			u_int32_t sn;
+
+			/* 生フレーム先頭 12B（ID/IED/CPR_MAI） */
+			if (dvd_memdump (d -> dvd, k * RAW_SECTOR_SIZE, 1, 12, head) < 0) { ok = false; break; }
+			sn = ((u_int32_t) head[1] << 16) | ((u_int32_t) head[2] << 8) | head[3];
+			if (sn != lba + k + 0x30000) { ok = false; break; }
+			/* 生フレーム末尾 10B（CPR_MAI 6B + EDC 4B） */
+			if (dvd_memdump (d -> dvd, k * RAW_SECTOR_SIZE + 2054, 1, 10, tail) < 0) { ok = false; break; }
+
+			memcpy (rawb + k * RAW_SECTOR_SIZE, head, 12);
+			for (i = 0; i < SECTOR_SIZE; i++)
+				rawb[k * RAW_SECTOR_SIZE + 12 + i] = rd[k * SECTOR_SIZE + i] ^ d -> drive_cipher12[m][i];
+			memcpy (rawb + k * RAW_SECTOR_SIZE + 2054, tail, 10);
+		}
+		if (!ok) {
+			warning ("method12 retry %d for block %u (memdump/sector)", retry + 1, blk);
+			continue;
+		}
+
+		/* EDC 検証（rawb は unscramble で一部書き換わるため、生フレームを退避） */
+		memcpy (rawtrue, rawb, RAW_BLOCK_SIZE);
+		if (!unscrambler_unscramble_16sectors (d -> u, lba, rawb, out)) {
+			warning ("method12 EDC failed for block %u (retry %d)", blk, retry + 1);
+			continue;
+		}
+		disc_cache_add_block_raw (d, blk, out, rawtrue);
+		return (true);
+	}
+
+	warning ("method12 failed for block %u, falling back to raw", blk);
+	if (disc_fast_read_raw_block (d, blk, rd, rawtrue, out)) {
+		disc_cache_add_block_raw (d, blk, out, rawtrue);
+		return (true);
+	}
+	error ("method12 read failed at block %u", blk);
 	return (false);
 }
 
@@ -1702,6 +1838,9 @@ bool disc_set_read_method (disc *d, int method) {
 		case 11:
 			d -> read_sector = disc_read_sector_11;
 			break;
+		case 12:
+			d -> read_sector = disc_read_sector_12;
+			break;
 		default:
 			switch (dvd_get_def_method(d -> dvd)) {
 			case 0: 
@@ -1751,6 +1890,10 @@ bool disc_set_read_method (disc *d, int method) {
 			case 11:
 				d -> read_method = 11;
 				d -> read_sector = disc_read_sector_11;
+				break;
+			case 12:
+				d -> read_method = 12;
+				d -> read_sector = disc_read_sector_12;
 				break;
 			default:
 				d -> read_method = DEFAULT_READ_METHOD;

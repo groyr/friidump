@@ -262,6 +262,8 @@ void help (void) {
 		"     --method10			Use dumping method 10 (0xe7 raw, base 0xA13000)\n"
 		"     --method11			Use dumping method 11 (fast: streaming READ +\n"
 		"				E7 6B prefixes + per-phase seed correction)\n"
+		"     --method12			Use dumping method 12 (fast + raw frame +\n"
+		"				E7 head/tail + per-block EDC verification)\n"
 		" -A, --allmethods		Try all known methods and commands until\n"
 		"				one works.\n"
 #ifdef DEBUG
@@ -303,6 +305,7 @@ bool optparse (int argc, char **argv) {
 		{"method9", 0, 0, '9'},
 		{"method10", 0, 0, 'J'},
 		{"method11", 0, 0, 'K'},
+		{"method12", 0, 0, 'L'},
 		{"stop", 0, 0, 'p'},
 		{"command", 1, 0, 'c'},
 		{"startsector", 1, 0, 't'},
@@ -347,9 +350,9 @@ bool optparse (int argc, char **argv) {
 
 	do {
 #ifdef DEBUG
-		c = getopt_long (argc, argv, "hpagd:r:i:u:Hs0::1::2::3::4::5::6::789c:t:S:x:T:AnfJK", long_options, &option_index);
+		c = getopt_long (argc, argv, "hpagd:r:i:u:Hs0::1::2::3::4::5::6::789c:t:S:x:T:AnfJKL", long_options, &option_index);
 #else
-		c = getopt_long (argc, argv, "hpagd:r:i:u:Hs0::1::2::3::4::5::6::789c:t:S:x:T:AJK", long_options, &option_index);
+		c = getopt_long (argc, argv, "hpagd:r:i:u:Hs0::1::2::3::4::5::6::789c:t:S:x:T:AJKL", long_options, &option_index);
 #endif
 
 		switch (c) {
@@ -414,6 +417,9 @@ bool optparse (int argc, char **argv) {
 				break;
 			case 'K':
 				options.dump_method = 11;
+				break;
+			case 'L':
+				options.dump_method = 12;
 				break;
 			case 'c':
 				options.command = atol (optarg);
