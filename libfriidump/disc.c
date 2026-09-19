@@ -111,6 +111,12 @@ struct disc_s {
 	u_int8_t **raw_cache;			//!< Memory area for raw sectors cache.
 	u_int8_t **cache;			//!< Memory area for unscrambled sectors cache.
 	u_int32_t *cache_map;			//!< Data structure used by the caching system to know which blocks are in memory.
+
+	/* fast方式 (method11) 用の補正テーブル。
+	 * corr[m][i] = cipher(drive_seed_m)[i] XOR cipher(gc_seed_m)[i]
+	 * 位相 m はブロック番号 mod 16。 */
+	bool fast_ready;
+	u_int8_t fast_corr[16][2042];
 };
 
 
@@ -740,6 +746,132 @@ static int disc_read_sector_10 (disc *d, u_int32_t sector_no, u_int8_t **data, u
 		error ("Too many retries, giving up");
 
 	return (out);
+}
+
+
+/* ---------- fast方式 (method11) ----------
+ * 通常 READ(12)(streaming) のホストデータは raw[12:2060] XOR cipher(drive_seed) を返す。
+ * GC 側 seed・ドライブ側 seed はともに 16 ブロック周期なので、代表 16 ブロックで
+ *   corr[m][i] = cipher(drive_seed_m)[i] XOR cipher(gc_seed_m)[i]
+ * を求めておけば、以降は
+ *   P[6:2048] = rd[0:2042] XOR corr[m][0:2042]   (m = block mod 16)
+ * で復号できる。各セクタ先頭 6B (raw[6:12]) は通常 READ に含まれないため E7(12B) で補う。
+ */
+
+/* 1 ブロックを mn103s の raw 経路で読み、host データ(rd)と復号済みデータ(P)を返す。
+ * READ は 2 回必要（1 回目は吸収される）。 */
+static bool disc_fast_read_raw_block (disc *d, u_int32_t blk, u_int8_t *rd, u_int8_t *P) {
+	static u_int8_t rawbuf[RAW_BLOCK_SIZE];
+	u_int32_t lba = blk * SECTORS_PER_BLOCK;
+	int retry;
+
+	for (retry = 0; retry < 5; retry++) {
+		u_int32_t k;
+		bool ok = true;
+
+		if (dvd_read_sector_streaming (d -> dvd, lba, NULL, NULL, 0) < 0)
+			continue;
+		if (dvd_read_sector_streaming (d -> dvd, lba, NULL, rd, BLOCK_SIZE) < 0)
+			continue;
+		if (dvd_memdump (d -> dvd, 0, 1, RAW_BLOCK_SIZE, rawbuf) < 0)
+			continue;
+
+		for (k = 0; k < SECTORS_PER_BLOCK; k++) {
+			u_int32_t sn = ((u_int32_t) rawbuf[k * RAW_SECTOR_SIZE + 1] << 16)
+				| ((u_int32_t) rawbuf[k * RAW_SECTOR_SIZE + 2] << 8)
+				| rawbuf[k * RAW_SECTOR_SIZE + 3];
+			if (sn != lba + k + 0x30000) { ok = false; break; }
+		}
+		if (!ok)
+			continue;
+		if (!unscrambler_unscramble_16sectors (d -> u, lba, rawbuf, P))
+			continue;
+		return (true);
+	}
+	return (false);
+}
+
+/* 代表 16 ブロック(16..31)から補正テーブルを作る */
+static bool disc_fast_calibrate (disc *d) {
+	static u_int8_t rd[BLOCK_SIZE];
+	static u_int8_t P[BLOCK_SIZE];
+	int m;
+
+	if (d -> fast_ready)
+		return (true);
+
+	for (m = 0; m < 16; m++) {
+		u_int32_t k, i;
+		if (!disc_fast_read_raw_block (d, 16 + m, rd, P)) {
+			error ("fast calibration failed at block %d", 16 + m);
+			return (false);
+		}
+		for (k = 0; k < SECTORS_PER_BLOCK; k++)
+			for (i = 0; i < SECTOR_SIZE - 6; i++)
+				d -> fast_corr[m][i] = rd[k * SECTOR_SIZE + i] ^ P[k * SECTOR_SIZE + 6 + i];
+	}
+	d -> fast_ready = true;
+	debug ("fast calibration done (16 phases)");
+	return (true);
+}
+
+static int disc_read_sector_11 (disc *d, u_int32_t sector_no, u_int8_t **data, u_int8_t **rawdata) {
+	static u_int8_t rd[BLOCK_SIZE];
+	static u_int8_t out[BLOCK_SIZE];
+	static u_int8_t rawbuf[RAW_BLOCK_SIZE];
+	u_int32_t blk = sector_no / SECTORS_PER_BLOCK;
+	u_int32_t lba = blk * SECTORS_PER_BLOCK;
+	int retry;
+
+	memset (rawbuf, 0, sizeof (rawbuf));	/* fast は raw 出力非対応（合成のみ） */
+
+	/* block0 は seed が例外なので raw 経路で読む */
+	if (blk == 0) {
+		if (!disc_fast_read_raw_block (d, 0, rd, out)) {
+			error ("fast read failed at block 0");
+			return (false);
+		}
+		disc_cache_add_block (d, 0, out, rawbuf);
+		return (true);
+	}
+
+	if (!disc_fast_calibrate (d))
+		return (false);
+
+	for (retry = 0; retry < 5; retry++) {
+		u_int32_t k, i;
+		int m = blk % 16;
+		bool ok = true;
+
+		if (dvd_read_sector_streaming (d -> dvd, lba, NULL, NULL, 0) < 0) { ok = false; continue; }
+		if (dvd_read_sector_streaming (d -> dvd, lba, NULL, rd, BLOCK_SIZE) < 0) { ok = false; continue; }
+
+		for (k = 0; k < SECTORS_PER_BLOCK; k++) {
+			u_int8_t e[12];
+			u_int32_t sn;
+
+			if (dvd_memdump (d -> dvd, k * RAW_SECTOR_SIZE, 1, 12, e) < 0) { ok = false; break; }
+			sn = ((u_int32_t) e[1] << 16) | ((u_int32_t) e[2] << 8) | e[3];
+			if (sn != lba + k + 0x30000) { ok = false; break; }
+
+			memcpy (out + k * SECTOR_SIZE, e + 6, 6);	/* 先頭 6B は raw から */
+			for (i = 0; i < SECTOR_SIZE - 6; i++)
+				out[k * SECTOR_SIZE + 6 + i] = rd[k * SECTOR_SIZE + i] ^ d -> fast_corr[m][i];
+		}
+		if (ok) {
+			disc_cache_add_block (d, blk, out, rawbuf);
+			return (true);
+		}
+		warning ("fast read retry %d for block %u", retry + 1, blk);
+	}
+
+	warning ("fast read failed for block %u, falling back to raw", blk);
+	if (disc_fast_read_raw_block (d, blk, rd, out)) {
+		disc_cache_add_block (d, blk, out, rawbuf);
+		return (true);
+	}
+	error ("fast read failed at block %u", blk);
+	return (false);
 }
 
 
@@ -1567,6 +1699,9 @@ bool disc_set_read_method (disc *d, int method) {
 		case 10:
 			d -> read_sector = disc_read_sector_10;
 			break;
+		case 11:
+			d -> read_sector = disc_read_sector_11;
+			break;
 		default:
 			switch (dvd_get_def_method(d -> dvd)) {
 			case 0: 
@@ -1612,6 +1747,10 @@ bool disc_set_read_method (disc *d, int method) {
 			case 10:
 				d -> read_method = 10;
 				d -> read_sector = disc_read_sector_10;
+				break;
+			case 11:
+				d -> read_method = 11;
+				d -> read_sector = disc_read_sector_11;
 				break;
 			default:
 				d -> read_method = DEFAULT_READ_METHOD;

@@ -332,9 +332,9 @@ static void dvd_assign_functions (dvd_drive *dvd, u_int32_t command) {
 		/* GCC-4160N / GCC-4240N はデータフレームが 0xA13000 に載る (DIC の Type1 相当)。
 		 * それ以外の MN103 系は従来の 0x80000000 ベースを使う。 */
 		if (strstr (dvd -> prod_id, "GCC-4160N") != NULL || strstr (dvd -> prod_id, "GCC-4240N") != NULL) {
-			debug ("Hitachi MN103S (0xA13000 base) DVD drive detected");
+			debug ("Hitachi MN103S (0xA13000 base) DVD drive detected, using fast method 11");
 			dvd -> memdump = &hitachi_mn103s_dump_mem;
-			dvd -> def_method = 10;
+			dvd -> def_method = 11;	/* fast方式（失敗時は raw にフォールバック） */
 		} else {
 			debug ("Hitachi MN103-based DVD drive detected, using Hitachi memory dump command");
 			dvd -> memdump = &hitachi_dvd_dump_mem;

@@ -42,6 +42,17 @@
      （streaming READ で 16 セクタをキャッシュ → `0xA13000` から E7 で 1 ブロック取得 → セクタ番号検証 → 逆スクランブル）
    - 効果: GCC-4240N 実機で正しいデータを取得可能（従来は誤アドレスで動作不能）
 
+6b. **GCC-4160N / GCC-4240N の fast方式（`method11`）**
+   - 通常 `READ(12)`（streaming ビット）は `raw[12:2060] XOR cipher(drive_seed)` を返す。
+     `drive_seed`・GC側 `gc_seed` はいずれも **16 ブロック周期**（GC 側は block0 のみ例外）
+   - 代表 16 ブロック(16..31)を raw で読み、位相ごとの補正
+     `corr[m][i] = cipher(drive_seed_m)[i] XOR cipher(gc_seed_m)[i]` を校正
+   - 本体 `disc_read_sector_11()`: `streaming READ×2`（`READ` は 2 回必要）→
+     `E7 12B×16`（セクタ番号検証＋先頭 6B）→ `rd[0:2042] XOR corr[m]` で復号
+   - block0 は例外のため raw 経路。検証 NG は raw にフォールバック
+   - 実機検証: **60000 セクタ(120MB) が DIC iso と MD5 一致**、~0.30 MB/s（GC 換算 ~77分）
+   - `--method10` / `--method11` で明示選択可能。fast は ISO 出力専用（raw 非対応）
+
 7. **`libfriidump/disc.c` — method7 の E7 読み出しバッチ化**
    - 5 ブロック分のキャッシュをメモリ連続領域として、`65535` バイト以下の E7 に束ねて読む（5 回 → 3 回）
 
@@ -65,11 +76,12 @@
 - 通常 READ が返す 2048B は「`raw[12:2060] XOR 固定seed`」であり、各セクタ先頭 6B (`raw[6:12]`) を含まない
   - そのため高速化には先頭 6B を **E7** で補う必要がある（`tools/probe/` 参照）
 
-## 高速化の調査結果（実験的・未実装）
+## 高速化の結果
 
 - `0xe7` は **転送律速で上限 ~682 KB/s**（サイズ比例）。GC 全面 1,437MiB で下限 ~36 分
-- fast方式: `streaming READ×2 + E7(先頭12B)×16 + 2種の16周期seed復号` で
-  **112/112 ブロック完全一致**を確認（推定 GC ~45〜60 分）。friidump 本体への実装は今後
+- fast方式（`method11`、実装済み）: `streaming READ×2 + E7(先頭12B)×16 + 16位相補正` で
+  **実機 60000 セクタが DIC iso と MD5 一致**、~0.30 MB/s（GC 換算 ~77分）
+- 持続時は `READ`（~45ms×2/ブロック）が律速。パイプライン化・1セクタ確定は不可を確認済み
 
 ## ビルド
 
