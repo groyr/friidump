@@ -3,3 +3,10 @@ CMakeFiles
 Makefile
 cmake_install.cmake
 install_manifest.txt
+build/
+build-win/
+__pycache__/
+*.o
+*.a
+*.so
+*.exe

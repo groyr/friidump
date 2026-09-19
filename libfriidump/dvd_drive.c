@@ -48,6 +48,7 @@
 #include <ntddscsi.h>
 #else
 #include <linux/cdrom.h>
+#include <scsi/sg.h>
 #include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <fcntl.h>
@@ -66,6 +67,7 @@
 int vanilla_2064_dvd_dump_mem	(dvd_drive *dvd, u_int32_t block_off, u_int32_t block_len, u_int32_t block_size, u_int8_t *buf);
 int vanilla_2384_dvd_dump_mem	(dvd_drive *dvd, u_int32_t block_off, u_int32_t block_len, u_int32_t block_size, u_int8_t *buf);
 int hitachi_dvd_dump_mem	(dvd_drive *dvd, u_int32_t block_off, u_int32_t block_len, u_int32_t block_size, u_int8_t *buf);
+int hitachi_mn103s_dump_mem	(dvd_drive *dvd, u_int32_t block_off, u_int32_t block_len, u_int32_t block_size, u_int8_t *buf);
 int liteon_dvd_dump_mem		(dvd_drive *dvd, u_int32_t block_off, u_int32_t block_len, u_int32_t block_size, u_int8_t *buf);
 int renesas_dvd_dump_mem	(dvd_drive *dvd, u_int32_t block_off, u_int32_t block_len, u_int32_t block_size, u_int8_t *buf);
 
@@ -186,46 +188,83 @@ int dvd_execute_cmd (dvd_drive *dvd, mmc_command *mmc, bool ignore_errors) {
 #else
 
 /**
- * Executes an MMC command.
+ * CDROM_SEND_PACKET による従来方式（SG_IOが使えない環境向けフォールバック）。
+ */
+static int dvd_execute_cmd_cgc (dvd_drive *dvd, mmc_command *mmc, bool ignore_errors) {
+	int out;
+	struct cdrom_generic_command cgc;
+	struct request_sense sense;
+
+	memset (&cgc, 0, sizeof (struct cdrom_generic_command));
+	memcpy (cgc.cmd, mmc -> cmd, sizeof (mmc -> cmd));
+	cgc.buffer = (unsigned char *) mmc -> buffer;
+	cgc.buflen = mmc -> buflen;
+	cgc.data_direction = CGC_DATA_READ;
+	cgc.timeout = MMC_CMD_TIMEOUT * 1000;
+	cgc.sense = &sense;
+	if (ioctl (dvd -> fd, CDROM_SEND_PACKET, &cgc) < 0 && !ignore_errors) {
+		out = -1;
+		error ("Execution of MMC command failed: %s", strerror (errno));
+	} else {
+		out = 0;
+	}
+	if (mmc -> sense) {
+		mmc -> sense -> sense_key = sense.sense_key;
+		mmc -> sense -> asc = sense.asc;
+		mmc -> sense -> ascq = sense.ascq;
+	}
+	return (out);
+}
+
+/**
+ * Executes an MMC command (Linux).
+ * 既定は SG_IO を使う。USBブリッジ越しでもベンダコマンド（0xe7等）が転送されやすい。
+ * SG_IO 非対応のデバイスでは従来の CDROM_SEND_PACKET にフォールバックする。
  * @param dvd The DVD drive the command should be exectued on.
  * @param mmc The command to be executed.
  * @param ignore_errors If set to true, no error will be printed if the command fails.
  * @return 0 if the command was executed successfully, < 0 otherwise.
  */
 int dvd_execute_cmd (dvd_drive *dvd, mmc_command *mmc, bool ignore_errors) {
-	int out;
-	struct cdrom_generic_command cgc;
-	struct request_sense sense;
-	
-#if 0
-	debug ("Executing MMC command: ");
-	hex_and_ascii_print ("", mmc -> cmd, sizeof (mmc -> cmd));
-#endif
+	int out = 0;
+	struct sg_io_hdr sg;
+	unsigned char sense[32];
 
-	/* Init Linux-format MMC command */
-	memset (&cgc, 0, sizeof (struct cdrom_generic_command));
-	memcpy (cgc.cmd, mmc -> cmd, sizeof (mmc -> cmd));
-	cgc.buffer = (unsigned char *) mmc -> buffer;
-	cgc.buflen = mmc -> buflen;
-	cgc.data_direction = CGC_DATA_READ;
-	cgc.timeout = MMC_CMD_TIMEOUT * 1000;	/* Linux uses milliseconds */
-	cgc.sense = &sense;
-	if (ioctl (dvd -> fd, CDROM_SEND_PACKET, &cgc) < 0 && !ignore_errors) {
-		out = -1;	/* Failure */
-		error ("Execution of MMC command failed: %s", strerror (errno));
-		debug ("Command was:");
-		hex_and_ascii_print ("", cgc.cmd, sizeof (cgc.cmd));
-		debug ("Sense data: %02X/%02X/%02X", sense.sense_key, sense.asc, sense.ascq);
+	memset (&sg, 0, sizeof (sg));
+	memset (sense, 0, sizeof (sense));
+	sg.interface_id = 'S';
+	sg.dxfer_direction = SG_DXFER_FROM_DEV;
+	sg.cmd_len = 12;
+	sg.mx_sb_len = sizeof (sense);
+	sg.dxferp = mmc -> buffer;
+	sg.dxfer_len = mmc -> buflen;
+	sg.cmdp = mmc -> cmd;
+	sg.sbp = sense;
+	sg.timeout = MMC_CMD_TIMEOUT * 1000;
+
+	if (ioctl (dvd -> fd, SG_IO, &sg) < 0) {
+		/* SG_IO が使えないデバイスは従来方式へ */
+		if (errno == ENOTTY || errno == EINVAL || errno == ENOSYS) {
+			return dvd_execute_cmd_cgc (dvd, mmc, ignore_errors);
+		}
+		if (!ignore_errors) {
+			error ("Execution of MMC command failed: %s", strerror (errno));
+			out = -1;
+		}
 	} else {
-		out = 0;
+		bool failed = ((sg.status & 0x7e) != 0) || sg.host_status || sg.driver_status;
+		if (mmc -> sense) {
+			mmc -> sense -> sense_key = sense[2] & 0x0f;
+			mmc -> sense -> asc = sense[12];
+			mmc -> sense -> ascq = sense[13];
+		}
+		if (failed && !ignore_errors) {
+			error ("Execution of MMC command failed (SG_IO): status=0x%02x host=%d driver=%d sense=%02X/%02X/%02X",
+			       sg.status, sg.host_status, sg.driver_status, sense[2], sense[12], sense[13]);
+			out = -1;
+		}
 	}
-	
-	if (mmc -> sense) {
-		mmc -> sense -> sense_key = sense.sense_key;
-		mmc -> sense -> asc = sense.asc;
-		mmc -> sense -> ascq = sense.ascq;
-	}
-	
+
 	return (out);
 }
 #endif
@@ -269,21 +308,40 @@ static int dvd_get_drive_info (dvd_drive *dvd) {
  * to be improved, but it is enough for the moment.
  * @param dvd The DVD drive the command should be exectued on.
  */
+/*! \brief HL-DT-ST（MN103S系）の0xe7メモリダンプ対応ドライブ判定。
+ *
+ * INQUIRYの製品IDは "DVD-ROM GDR8082N" や "RW/DVD GCC-4240N" のように
+ * 接頭辞・スラッシュ表記が機種ごとに異なるため、部分一致で判定する。
+ * GCC-4240N/4243N/4244N は redump で 0xe7 による吸い出し実績が報告されている。
+ */
+static bool dvd_is_hitachi_family (const char *vendor, const char *prod_id) {
+	static const char *const ids[] = {
+		"GDR8082N", "GDR8161B", "GDR8162B", "GDR8163B", "GDR8164B",
+		"GCC-4160N", "GCC-4240N", "GCC-4241N", "GCC-4243N", "GCC-4244N", "GCC-4247N"
+	};
+	if (strcmp (vendor, "HL-DT-ST") != 0) return false;
+	for (size_t i = 0; i < sizeof (ids) / sizeof (ids[0]); i++) {
+		if (strstr (prod_id, ids[i]) != NULL) return true;
+	}
+	return false;
+}
+
 static void dvd_assign_functions (dvd_drive *dvd, u_int32_t command) {
 	dvd -> def_method = 0;
-	if (strcmp (dvd -> vendor, "HL-DT-ST") == 0 && (
-//		strcmp (dvd -> prod_id, "DVDRAM GSA-T10N") == 0 ||
-		strcmp (dvd -> prod_id, "DVD-ROM GDR8082N") == 0 ||
-		strcmp (dvd -> prod_id, "DVD-ROM GDR8161B") == 0 ||
-		strcmp (dvd -> prod_id, "DVD-ROM GDR8162B") == 0 ||
-		strcmp (dvd -> prod_id, "DVD-ROM GDR8163B") == 0 || 
-		strcmp (dvd -> prod_id, "DVD-ROM GDR8164B") == 0
-	)) {
-		debug ("Hitachi MN103-based DVD drive detected, using Hitachi memory dump command");
-		dvd -> memdump = &hitachi_dvd_dump_mem;
+	if (dvd_is_hitachi_family (dvd -> vendor, dvd -> prod_id)) {
+		/* GCC-4160N / GCC-4240N はデータフレームが 0xA13000 に載る (DIC の Type1 相当)。
+		 * それ以外の MN103 系は従来の 0x80000000 ベースを使う。 */
+		if (strstr (dvd -> prod_id, "GCC-4160N") != NULL || strstr (dvd -> prod_id, "GCC-4240N") != NULL) {
+			debug ("Hitachi MN103S (0xA13000 base) DVD drive detected");
+			dvd -> memdump = &hitachi_mn103s_dump_mem;
+			dvd -> def_method = 10;
+		} else {
+			debug ("Hitachi MN103-based DVD drive detected, using Hitachi memory dump command");
+			dvd -> memdump = &hitachi_dvd_dump_mem;
+			dvd -> def_method = 9;
+		}
 		dvd -> command = 2;
 		dvd -> supported = true;
-		dvd -> def_method = 9;
 
 	} else if (strcmp (dvd -> vendor, "LITE-ON") == 0 && (
 		strcmp (dvd ->prod_id, "DVDRW LH-18A1H") == 0 ||
@@ -664,11 +722,11 @@ DataIn             : 0
 TimeOutValue       : 5000
 
 CDB:
-00000000  B6 00 00 00 00 00 00 00 00 00 1C 00               �...........    
+00000000  B6 00 00 00 00 00 00 00 00 00 1C 00               �...........    
 
 Data Sent:
 00000000  00 00 00 00 00 00 00 00 00 00 00 00 FF FF FF FF   ............____
-00000010  00 00 03 E8 FF FF FF FF 00 00 03 E8               ...�____...�    
+00000010  00 00 03 E8 FF FF FF FF 00 00 03 E8               ...�____...�    
 */
 	mmc_command mmc;
 	int out;

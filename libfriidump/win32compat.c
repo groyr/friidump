@@ -29,6 +29,8 @@
 #include <sys/timeb.h>
 
 
+/* MinGW は strndup/ftruncate/gettimeofday を提供するため、MSVC のときだけ自前定義する */
+#ifndef __MINGW32__
 char *strndup (const char *src, int c) {
     char *dest;
 
@@ -71,5 +73,6 @@ int gettimeofday(struct timeval *tv, struct timezone *tz) {
     tv->tv_usec = ((int) tb.millitm) * 1000;
     return 0;
 }
+#endif /* __MINGW32__ */
 
 #endif

@@ -40,6 +40,14 @@
 #include "dvd_drive.h"
 #include "unscrambler.h"
 
+#ifdef WIN32
+#include <windows.h>
+#define DISC_MSLEEP(ms) Sleep (ms)
+#else
+#include <unistd.h>
+#define DISC_MSLEEP(ms) usleep ((ms) * 1000)
+#endif
+
 // #define cachedebug(...) debug (__VA_ARGS__);
 #define cachedebug(...)
 
@@ -413,27 +421,45 @@ static int disc_read_sector_7 (disc *d, u_int32_t sector_no, u_int8_t **data, u_
 		}
 
 		if ((ret = dvd_read_sector_streaming (d -> dvd, sector_no, NULL, NULL, 0)) >= 0) {
-			for (j = 0; j < 5 && sector_no + j * 16 < d -> sectors_no && out; j++) {
-				if (dvd_memdump (d -> dvd, 0 + (j * 16 * 2064), 1, 16 * 2064, buf[j]) < 0) {	/* Dumping in a single block is faster */
-					error ("Memdump failed");
-					out = false;
-					retry = MAX_READ_RETRIES;		/* Well, if this fails going on is useless */
-				} else {
-#ifdef DEBUG
-					if (d -> unscrambling) {
-#endif
-						/* Try to unscramble all data to see if EDC fails */
-						if (!unscrambler_unscramble_16sectors (d -> u, sector_no + (j * 16), buf[j], buf_unscrambled[j]))
-							out = false;
-#ifdef DEBUG
+			/* 5ブロック分のキャッシュはメモリ上で連続しているため、E7(0xe7)を
+			 * 65535バイト以下の読み出しに束ねてコマンド数を削減する（5回→3回）。 */
+			int nblk = 0;
+			while (nblk < 5 && sector_no + nblk * 16 < d -> sectors_no)
+				nblk++;
+
+			if (nblk > 0 && out) {
+				u_int32_t total = (u_int32_t) nblk * 16 * 2064;
+				u_int32_t done = 0;
+				u_int8_t *dst = &buf[0][0];
+				while (done < total) {
+					u_int32_t chunk = total - done;
+					if (chunk > 65535)
+						chunk = 65535;	/* Hitachiメモリダンプの上限 */
+					if (dvd_memdump (d -> dvd, done, 1, chunk, dst + done) < 0) {
+						error ("Memdump failed");
+						out = false;
+						retry = MAX_READ_RETRIES;		/* Well, if this fails going on is useless */
+						break;
 					}
-#endif
+					done += chunk;
 				}
+			}
+
+			for (j = 0; j < nblk && out; j++) {
+#ifdef DEBUG
+				if (d -> unscrambling) {
+#endif
+					/* Try to unscramble all data to see if EDC fails */
+					if (!unscrambler_unscramble_16sectors (d -> u, sector_no + (j * 16), buf[j], buf_unscrambled[j]))
+						out = false;
+#ifdef DEBUG
+				}
+#endif
 			}
 
 			if (out) {
 				/* It seems all data was unscrambled correctly, so cache them out */
-				for (j = 0; j < 5 && sector_no + j * 16 < d -> sectors_no; j++)
+				for (j = 0; j < nblk; j++)
 					disc_cache_add_block (d, start_block + j, buf_unscrambled[j], buf[j]);
 
 			}
@@ -639,6 +665,75 @@ static int disc_read_sector_9 (disc *d, u_int32_t sector_no, u_int8_t **data, u_
 			error ("dvd_read_sector_streaming() failed with %d", ret);
 			out = false;
 		}
+	}
+
+	if (!out)
+		error ("Too many retries, giving up");
+
+	return (out);
+}
+
+
+/* GCC-4160N / GCC-4240N (MN103S, DIC の Type1 相当) 用。
+ * 16セクタを streaming READ でキャッシュし、0xA13000 から 1 ブロック分 (33024B) を
+ * E7 で取り出す。DIC と同じシーケンスだが、余計なログ/照合を省くことで高速化する。 */
+static int disc_read_sector_10 (disc *d, u_int32_t sector_no, u_int8_t **data, u_int8_t **rawdata) {
+	bool out;
+	u_int32_t start_block;
+	int ret, retry;
+	u_int8_t buf[16 * 2064];
+	u_int8_t buf_unscrambled[16 * 2048];
+
+	start_block = sector_no / SECTORS_PER_BLOCK;
+
+	out = false;
+	/* DIC と同様に、ひとつ前のブロックを READ してキャッシュを更新させると復帰しやすい */
+	for (retry = 0; !out && retry < 5; retry++) {
+		/* Assume everything will turn out well */
+		out = true;
+
+		if (retry > 0) {
+			warning ("Read retry %d for sector %u", retry, sector_no);
+
+			/* 直前ブロックを READ してドライブのキャッシュを更新させる (DIC の復帰手順) */
+			if (start_block > 0)
+				dvd_read_sector_streaming (d -> dvd, (start_block - 1) * SECTORS_PER_BLOCK, NULL, NULL, 0);
+		}
+
+		if ((ret = dvd_read_sector_streaming (d -> dvd, start_block * SECTORS_PER_BLOCK, NULL, NULL, 0)) < 0) {
+			error ("dvd_read_sector_streaming() failed with %d", ret);
+			out = false;
+			continue;
+		}
+
+		/* 0xA13000 から 1 ブロック分の生セクタをまとめて取得 */
+		if (dvd_memdump (d -> dvd, 0, 1, 16 * 2064, buf) < 0) {
+			error ("Memdump failed");
+			out = false;
+			retry = MAX_READ_RETRIES;		/* Well, if this fails going on is useless */
+			continue;
+		}
+
+		/* 生セクタ先頭のセクター番号が要求と一致するか確認（デシンク検出） */
+		{
+			u_int32_t sn = ((u_int32_t) buf[1] << 16) | ((u_int32_t) buf[2] << 8) | buf[3];
+			u_int32_t exp = start_block * SECTORS_PER_BLOCK + 0x30000;
+			if (sn != exp && retry == 0)
+				warning ("Sector num from cache: got 0x%X, expected 0x%X (block %u)", sn, exp, start_block);
+		}
+
+#ifdef DEBUG
+		if (d -> unscrambling) {
+#endif
+			/* Try to unscramble all data to see if EDC fails */
+			if (!unscrambler_unscramble_16sectors (d -> u, start_block * SECTORS_PER_BLOCK, buf, buf_unscrambled))
+				out = false;
+#ifdef DEBUG
+		}
+#endif
+
+		if (out)
+			disc_cache_add_block (d, start_block, buf_unscrambled, buf);
 	}
 
 	if (!out)
@@ -1469,6 +1564,9 @@ bool disc_set_read_method (disc *d, int method) {
 		case 9:
 			d -> read_sector = disc_read_sector_9;
 			break;
+		case 10:
+			d -> read_sector = disc_read_sector_10;
+			break;
 		default:
 			switch (dvd_get_def_method(d -> dvd)) {
 			case 0: 
@@ -1510,6 +1608,10 @@ bool disc_set_read_method (disc *d, int method) {
 			case 9: 
 				d -> read_method = 9;
 				d -> read_sector = disc_read_sector_9;
+				break;
+			case 10:
+				d -> read_method = 10;
+				d -> read_sector = disc_read_sector_10;
 				break;
 			default:
 				d -> read_method = DEFAULT_READ_METHOD;

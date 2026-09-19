@@ -2,7 +2,7 @@ FriiDump came to existance thanks to the work by a lot of people, most of which
 are probably not aware of this fact ;). So here is proper credit:
 
 The DVD seed bruteforcing algorithm and code were taken from unscrambler 0.4
-by Victor Muñoz (xt5@ingenieria-inversa.cl,
+by Victor Muï¿½oz (xt5@ingenieria-inversa.cl,
 http://www.ingenieria-inversa.cl/?lp_lang_pref=en).
 
 The theoritical basis of the dumping methods were suggested in several comments
@@ -39,3 +39,19 @@ code are by me, Arep <arep@no.net>.
 Finally, obvious thanks go out to Nintendo for making all of their great
 consoles, who constantly help me to waste the rest of my spare time I do not
 spend coding ;).
+
+
+--------------------------------------------------------------------------
+This fork (bradenmcd/friidump -> groyr/friidump)
+--------------------------------------------------------------------------
+Maintained by groyr <https://github.com/groyr>.
+
+Additions in this fork:
+- HL-DT-ST GCC-4160N / GCC-4240N (Hitachi MN103S) support:
+  corrected 0xe7 memory base address 0xA13000 and added read method 10.
+- Linux armv6 (Raspberry Pi) and Windows MinGW build fixes.
+- Linux SG_IO transport for USB bridges.
+- Research tooling under tools/probe/ (SCSI protocol exploration).
+
+All original copyright notices and the GNU GPL v2 license (see COPYING) are
+preserved. This is a community fork and is not the upstream project.

@@ -25,6 +25,10 @@
 #ifdef WIN32
 #include <windows.h>
 #include <time.h>
+#ifdef __MINGW32__
+#include <unistd.h>
+#include <sys/time.h>
+#endif
 
 /* Stuff to export library symbols */
 #ifdef FRIIDUMPLIB_BUILD_DLL
@@ -46,16 +50,21 @@
 #define u_int64_t ULONGLONG
 typedef long suseconds_t;
 
-/* Some functions have different names */
+/* Some functions have different names (MSVC only: MinGW provides the POSIX names) */
+#ifdef _MSC_VER
 #define snprintf _snprintf
 #define strdup _strdup
 #define strcasecmp lstrcmpi
 #define va_copy(ap1, ap2) ((ap1) = (ap2))		// MSVC doesn't have va_copy, how crap...
+#endif
 
-/* Some functions do not exist (export them for applications, too) */
+/* MinGW は strndup/ftruncate/gettimeofday を提供するため、MSVC のときだけ自前宣言する
+ * （MinGW の off_t は long のためシグネチャが食い違う点にも注意）。 */
+#ifndef __MINGW32__
 FRIIDUMPLIB_EXPORT char *strndup (const char *src, int c);
 FRIIDUMPLIB_EXPORT int ftruncate (int fd, __int64 size);
 FRIIDUMPLIB_EXPORT int gettimeofday(struct timeval *tv, struct timezone *tz);
+#endif
 
 /* Windows does have a different localtime() */
 #define localtime_r(x, y) !localtime_s (y, x)

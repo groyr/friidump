@@ -145,3 +145,33 @@ int hitachi_dvd_dump_mem (dvd_drive *dvd, u_int32_t offset, u_int32_t block_len,
 
 	return (out);
 }
+
+
+/*! \brief MN103S (GCC-4160N / GCC-4240N 等) 用のメモリダンプ。
+ *
+ * DIC (DiscImageCreator) の実測に合わせ、READ したデータフレームは 0xA13000 に
+ * キャッシュされる。従来の HITACHI_MEM_BASE (0x80000000) では誤った番地を読むため、
+ * この機種向けに専用のベースアドレスを使う。
+ */
+#define MN103S_MEM_BASE 0xA13000
+
+int hitachi_mn103s_dump_mem (dvd_drive *dvd, u_int32_t offset, u_int32_t block_len, u_int32_t block_size, u_int8_t *buf) {
+	u_int32_t i;
+	int r, out;
+
+	if (!buf) {
+		error ("NULL buffer");
+		out = -1;
+	} else {
+		r = -10;
+		for (i = 0; i < block_len; i++) {
+			if ((r = hitachi_dvd_dump_memblock (dvd, MN103S_MEM_BASE + offset + i * block_size, block_size, buf + i * block_size)) < 0) {
+				error ("hitachi_mn103s_dump_mem() failed with %d", r);
+				break;
+			}
+		}
+		out = r;
+	}
+
+	return (out);
+}

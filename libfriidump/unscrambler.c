@@ -25,7 +25,7 @@
  * As Nintendo GameCube/Wii discs use the standars DVD-ROM scrambling algorithm, but with different, unknown, seeds, the actual seeds have to be brute-forced.
  * The functions in this file take care of the brute-forcing and of the actual unscrambling of the read sectors.
  *
- * The code in this file has been derived from unscrambler 0.4, Copyright (C) 2006 Victor Mu�oz (xt5@ingenieria-inversa.cl), GPL v2+,
+ * The code in this file has been derived from unscrambler 0.4, Copyright (C) 2006 Victor Mu�oz (xt5@ingenieria-inversa.cl), GPL v2+,
  * http://www.ingenieria-inversa.cl/?lp_lang_pref=en .
  */
 
@@ -41,6 +41,9 @@
 
 // #define unscramblerdebug(...) debug (__VA_ARGS__);
 #define unscramblerdebug(...)
+
+/* disctype の実体定義（unscrambler.h では extern 宣言） */
+u_int8_t disctype;
 
 /*! \brief Size of the seeds cache (Do not touch) */
 #define MAX_SEEDS 4

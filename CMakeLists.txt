@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 2.8)
+cmake_minimum_required(VERSION 3.5)
 
 # The name of our project is "HELLO".  CMakeLists files in this project can
 # refer to the root source directory of the project as ${HELLO_SOURCE_DIR} and
@@ -9,6 +9,8 @@ if (MSVC)
     # msvc2005 deprecated warnings
     add_definitions (-D_CRT_SECURE_NO_DEPRECATE -D_CRT_NONSTDC_NO_DEPRECATE)
 else (MSVC)
+    # 古い K&R 宣言を現代の GCC (C23 既定) でも通すため gnu11 を使う
+    add_compile_options (-std=gnu11)
     if (NOT WIN32)
       add_definitions (-fPIC)
     endif (NOT WIN32)
