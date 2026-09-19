@@ -77,10 +77,13 @@ added to the compatibility list.
 
 NOTE (this fork): GCC-4160N/GCC-4240N data frames are cached at `0xA13000`,
 not `0x80000000`; using the wrong base address makes dumping fail. This fork
-also implements a fast read method (method 11) that combines streaming reads
-with `0xe7` prefix reads and per-phase seed correction (ISO output only; see
-`--method11`). See `PATCHES.md` for all changes, known limitations (USB bridge
-cache desync) and build instructions (Linux/armv6, MinGW).
+also implements fast read methods: `method11` (streaming reads + `0xe7` prefix
+reads + per-phase seed correction, ISO only) and `method12` (default: the same
+fast decode plus raw frame reconstruction from `0xe7` head/tail and per-block
+EDC verification, producing a DIC/redump-compatible scrambled raw image). See
+`--method11` / `--method12` and `PATCHES.md` for all changes, known limitations
+(USB bridge cache desync, ~62 min per GC disc) and build instructions
+(Linux/armv6, MinGW).
 
 
 ===============================================================================
