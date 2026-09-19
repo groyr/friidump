@@ -5,6 +5,7 @@ cmake_install.cmake
 install_manifest.txt
 build/
 build-win/
+build-win2/
 __pycache__/
 *.o
 *.a
