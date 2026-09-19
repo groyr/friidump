@@ -23,6 +23,7 @@
 #include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <multihash.h>
 #include "constants.h"
 #include "disc.h"
@@ -31,7 +32,12 @@
 #ifndef WIN32
 #include <unistd.h>
 #include <sys/types.h>
+#else
+#include <io.h>
 #endif
+
+/*! \brief ジャーナルを書き込む間隔（セクタ単位）。20ブロックごと。 */
+#define JOURNAL_INTERVAL 320
 
 struct dumper_s {
 	disc *dsk;
@@ -44,6 +50,12 @@ struct dumper_s {
 	u_int32_t start_sector;
 	bool hashing;
 	bool flushing;
+	bool resume;
+
+	/*! 再開用ジャーナル（クラッシュ時のテール破損対策）。
+	 * EDC検証済みで書き込みが完了した最後のセクタを記録する。 */
+	char *journal_path;
+	FILE *fp_journal;
 
 	multihash hash_raw;
 	multihash hash_iso;
@@ -51,6 +63,48 @@ struct dumper_s {
 	progress_func progress;
 	void *progress_data;
 };
+
+
+/*! \brief ジャーナルをディスクへ同期する（クラッシュ耐性）。 */
+static void dumper_journal_sync (FILE *fp) {
+#ifdef WIN32
+	if (fp) _commit (_fileno (fp));
+#else
+	if (fp) fsync (fileno (fp));
+#endif
+}
+
+
+/*! \brief 直近の完了位置をジャーナルへ書き込む。
+ * @param next_sector 次に読むべきセクタ（ブロック境界）。 */
+static void dumper_journal_write (dumper *dmp, u_int32_t next_sector) {
+	if (!dmp -> fp_journal)
+		return;
+	rewind (dmp -> fp_journal);
+	fprintf (dmp -> fp_journal, "next=%u\n", next_sector);
+	fflush (dmp -> fp_journal);
+	dumper_journal_sync (dmp -> fp_journal);
+}
+
+
+/*! \brief ジャーナルから再開位置を読む。無ければ 0。 */
+static u_int32_t dumper_journal_read (const char *path) {
+	FILE *fp;
+	char line[64];
+	u_int32_t out;
+
+	out = 0;
+	fp = fopen (path, "rb");
+	if (!fp)
+		return (0);
+	if (fgets (line, sizeof (line), fp)) {
+		unsigned long v;
+		if (sscanf (line, "next=%lu", &v) == 1)
+			out = (u_int32_t) v;
+	}
+	fclose (fp);
+	return (out);
+}
 
 
 /**
@@ -65,6 +119,8 @@ bool dumper_set_raw_output_file (dumper *dmp, char *outfile_raw, bool resume) {
 	bool out;
 	my_off_t filesize;
 	FILE *fp;
+
+	dmp -> resume = dmp -> resume || resume;
 
 	if (!outfile_raw) {
 		/* Raw output disabled */
@@ -107,6 +163,8 @@ bool dumper_set_iso_output_file (dumper *dmp, char *outfile_iso, bool resume) {
 	bool out;
 	my_off_t filesize;
 	FILE *fp;
+
+	dmp -> resume = dmp -> resume || resume;
 
 	if (!outfile_iso) {
 		/* Raw output disabled */
@@ -163,6 +221,23 @@ bool dumper_prepare (dumper *dmp) {
 		dmp -> start_sector = dmp -> start_sector_iso;
 	} else {
 		MY_ASSERT (0);
+	}
+
+	/* ジャーナル: raw 優先でパスを決め、resume時は未フラッシュ分を切り捨てる */
+	{
+		const char *base = dmp -> outfile_raw ? dmp -> outfile_raw : dmp -> outfile_iso;
+		if (base) {
+			size_t l = strlen (base) + 9;
+			dmp -> journal_path = (char *) malloc (l);
+			snprintf (dmp -> journal_path, l, "%s.journal", base);
+		}
+		if (dmp -> resume && dmp -> journal_path) {
+			u_int32_t j = dumper_journal_read (dmp -> journal_path);
+			if (j > 0 && j < dmp -> start_sector) {
+				dmp -> start_sector = (j / SECTORS_PER_BLOCK) * SECTORS_PER_BLOCK;
+				debug ("Journal: resuming from sector %u", dmp -> start_sector);
+			}
+		}
 	}
 
 	/* Prepare hashes */
@@ -222,6 +297,13 @@ bool dumper_prepare (dumper *dmp) {
 		}
 	} else {
 		dmp -> fp_iso = NULL;
+	}
+
+	/* ジャーナルを書き込み用に開き、開始位置を記録 */
+	if (out && dmp -> journal_path) {
+		dmp -> fp_journal = fopen (dmp -> journal_path, "wb");
+		if (dmp -> fp_journal)
+			dumper_journal_write (dmp, dmp -> start_sector);
 	}
 
 	return (out);
@@ -321,8 +403,12 @@ int dumper_dump (dumper *dmp, u_int32_t *current_sector) {
 
 			if ((i % 320 == 0) || (i == last_sector)) { //speedhack
 				if (dmp -> progress)
-					dmp -> progress (false, i + 1, sectors_no, dmp -> progress_data);		/* i + 1 'cause sectors range from 0 to N */
+					dmp -> progress (false, i + 1, sectors_no, dmp -> progress_data);
 			}
+
+			/* EDC検証済みの完了位置をジャーナルへ記録（クラッシュ耐性） */
+			if (dmp -> fp_journal && (((i + 1) % JOURNAL_INTERVAL) == 0 || i == last_sector))
+				dumper_journal_write (dmp, i + 1);
 		}
 
 		if (dmp -> hashing) {
@@ -383,6 +469,9 @@ void dumper_set_flushing (dumper *dmp, bool f) {
 void *dumper_destroy (dumper *dmp) {
 	my_free (dmp -> outfile_raw);
 	my_free (dmp -> outfile_iso);
+	if (dmp -> fp_journal)
+		fclose (dmp -> fp_journal);
+	my_free (dmp -> journal_path);
 	my_free (dmp);
 
 	return (NULL);
