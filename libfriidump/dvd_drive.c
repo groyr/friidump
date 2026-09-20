@@ -425,7 +425,10 @@ dvd_drive *dvd_drive_new (char *device, u_int32_t command) {
 	if ((fd = CreateFile (dev, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL)) == INVALID_HANDLE_VALUE) {
 		error ("Cannot open drive: %d", GetLastError ());
 #else
-	if ((fd = open (device, O_RDONLY | O_NONBLOCK)) < 0) {
+	/* Linux の SG_IO はブロックデバイス(/dev/srN)ではベンダコマンド 0xe7 を
+	   CAP_SYS_RAWIO 無しで拒否する。文字デバイス(/dev/sgN)を O_RDWR で開くことで
+	   一般ユーザー(cdrom グループ)でも 0xe7 を発行できる。Windows 実装も RW で開く。 */
+	if ((fd = open (device, O_RDWR | O_NONBLOCK)) < 0) {
 		perror ("Cannot open drive");
 #endif
 		dvd = NULL;

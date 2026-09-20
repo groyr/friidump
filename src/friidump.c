@@ -675,7 +675,7 @@ int main (int argc, char *argv[]) {
 	progstats stats;
 	double duration;
 	suseconds_t us;
-	int out, ret;
+	int out, ret = EXIT_FAILURE;
 	unscrambler *u;
 	unscrambler_progress_func pfunc;
 	u_int32_t current_sector;
@@ -773,5 +773,5 @@ int main (int argc, char *argv[]) {
 		my_free (options.raw_in);
 	}
 
-	return (out);
+	return (ret);
 }

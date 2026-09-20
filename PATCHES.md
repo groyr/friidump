@@ -31,6 +31,10 @@
    - Linux の `dvd_execute_cmd` を **SG_IO**（`/dev/srN`・`/dev/sgN`）優先に変更し、
      USBブリッジ越しでもベンダコマンド（`0xe7`）が転送されやすくした
    - SG_IO が使えない環境は従来の `CDROM_SEND_PACKET` にフォールバック
+   - **ブロックデバイス `/dev/srN` では `0xe7` が `EPERM`**（カーネルのコマンド許可リスト。
+     CAP_SYS_RAWIO 必須）。**`O_RDWR` で開いた文字デバイス `/dev/sgN`** を使う
+     （一般ユーザー/cdrom グループでも可）。そのため POSIX の open を
+     `O_RDONLY` → `O_RDWR` に修正（Windows 実装も RW で開いている）
 
 6. **GCC-4160N / GCC-4240N の `0xe7` ベースアドレス修正と `method10`**
    - **根因**: 従来の `HITACHI_MEM_BASE = 0x80000000` は GCC-4240N では誤り。
@@ -67,11 +71,18 @@
      - ISO MD5 = `60a52be1d4d5fadc3838d73d6de200f5`（redump 一致）
      - RAW MD5 = `78c7710292d9709f7c3f03375f2a0a72`（DIC `gc2.raw` 一致）
      - ~0.32 MB/s（GC 換算 ~62分。method11 と同等速度で raw+EDC を追加）
+   - **Pi(armv6) 実機の全ディスク検証（2026-09-20, OTG接続）**:
+     - ISO MD5 = redump `60a52be1d4d5fadc3838d73d6de200f5`（1,459,978,240B）
+     - `/dev/sgN` + `O_RDWR` で ~0.31 MB/s（~80分）
 
 6d. **`libfriidump/dumper.c` — ジャーナル（テール破損対策 / resume 安全化）**
    - `<raw|iso>.journal` に **EDC検証済みの完了位置**を 320 セクタ毎に `fsync` 記録
    - resume 時はファイルサイズとジャーナルの**小さい方**を採用し、未フラッシュ／破損テールを切り捨て
    - 破壊テスト（末尾破壊 → ジャーナル手前から再開）で ISO/RAW の一致回復を確認
+
+6e. **`src/friidump.c` — 終了コードの修正**
+   - `main` が成功時に `out`(=1) を返していた（失敗時に 0）。`ret`（`EXIT_SUCCESS`/`EXIT_FAILURE`）を返すよう修正
+   - 効果: 呼び出し側（GC Ripper サーバ等）が exit コードで成否判定できる
 
 7. **`libfriidump/disc.c` — method7 の E7 読み出しバッチ化**
    - 5 ブロック分のキャッシュをメモリ連続領域として、`65535` バイト以下の E7 に束ねて読む（5 回 → 3 回）
@@ -98,6 +109,8 @@
   - **別 USB ブリッジでの改善は不確実**。通常のデータDVDは ~2MB/s 出るが、GC はドライブの
     GC読み挙動（キャッシュが stale になる）が支配的で ~0.3MB/s。詳細は「高速化の結果」参照
 - E7 のベースアドレスは機種依存。GCC-4160N/4240N は `0xA13000`（`0x80000000` は誤り）
+- **Linux の SG_IO**: ベンダコマンド `0xe7` はブロックデバイス `/dev/srN` では `EPERM`
+  （CAP_SYS_RAWIO 必須）。**文字デバイス `/dev/sgN` を `O_RDWR` で開く**こと
 - スクランブル seed は **16 ブロック周期**。GC seed は disc ごとに異なるため校正が必要（block0 は例外）
 - 通常 READ が返す 2048B は「`raw[12:2060] XOR 固定seed`」であり、各セクタ先頭 6B (`raw[6:12]`) を含まない
   - そのため高速化には先頭 6B を **E7** で補う必要がある
