@@ -99,6 +99,10 @@ Prebuilt binaries for this fork are available on the GitHub Releases page:
 Releases are built automatically by GitHub Actions when a version tag (e.g.
 `0.5.3.2`, or `v*`) is pushed.
 
+This fork is based on FriiDump 0.5.3.1. Wii dual-layer discs are not yet
+supported by the fork's read methods (method13 is a stub for Hitachi Type2);
+see PATCHES.md.
+
 
 ===============================================================================
 Installation
@@ -109,9 +113,9 @@ straightforward.
 
 If you downloaded the sources, you will need to compile them. FriiDump uses
 CMake, for easy portability, so you will need to get it from cmake.org. On
-Windows you will also need a compiler like Visual Studio (the only tested one,
-so far) or CygWin/MinGW. On UNIX just do the following, from the directory
-where you unpacked the sources into:
+Windows, MSYS2/MinGW-w64 (UCRT64) and Visual Studio are supported (this fork's
+Windows builds use MSYS2/UCRT64). On UNIX just do the following, from the
+directory where you unpacked the sources into:
 
 $ mkdir BUILD
 $ cd BUILD
@@ -119,8 +123,12 @@ $ cmake ..
 $ make
 $ make install
 
-Linux-specific note: You need root privileges to issue certain commands to the
-DVD-ROM drive. Hence you have the following possibilities:
+Linux-specific note: the vendor memory-dump command (`0xe7`) must be issued to
+the SCSI generic character device (`/dev/sgN`), opened O_RDWR. Being a member of
+the "cdrom" group is usually enough; the setuid trick described by upstream is
+NOT required for `0xe7` on `/dev/sgN`.
+
+For reference, upstream's privilege note (mainly for non-`0xe7` drives):
 - Run FriiDump as root: discouraged.
 - Run it through sudo: better but nevertheless discouraged.
 - Set the setuid bit on the executable: this is the recommended way to run
@@ -153,9 +161,13 @@ resume an existing dump, use -s. If you want to dump the disc to a raw format
 image file, use -r. Note that you can create a raw and an ISO image at the same
 time.
 
-Other options you might want to use are -1 through -4, to set the dump method,
-although the default is method 4, which is the fastest one, so most likely you
-will not need them.
+On Linux, pass the SCSI generic character device (for example `-d /dev/sg0`),
+not the block device (`/dev/sr0`): the `0xe7` vendor command is rejected on block
+devices without CAP_SYS_RAWIO. Use `-g` for machine-readable progress output.
+
+Read methods 10-13 are implemented for Hitachi-LG (MN103S) drives. The default for
+GCC-4160N/GCC-4240N is method12 (fast decode + raw frame + per-block EDC). See
+PATCHES.md for the method details.
 
 Finally, use -h for a listing of all available options.
 
@@ -163,9 +175,10 @@ Finally, use -h for a listing of all available options.
 ===============================================================================
 Performance
 ===============================================================================
-As stated above, FriiDump is not as fast as RawDump. On my PC (Athlon64 3200+),
-performance is as follows:
+The table below is from upstream FriiDump (measured on a PC with a different
+drive) and does NOT reflect this fork.
 
+Upstream reference (PC, Athlon64 3200+):
 -------------------------------------------------------------------------------
 |  Method  |  Dump speed  |  GameCube disc dump time  |  Wii disc dump time   |
 -------------------------------------------------------------------------------
@@ -174,6 +187,14 @@ performance is as follows:
 |    3     |   ~740 MB/h  |          2 hours          |         6 hours       |
 |    4     |  ~1250 MB/h  |         1.2 hours         |        3.5 hours      |
 -------------------------------------------------------------------------------
+
+This fork (HL-DT-ST GCC-4240N via an Initio USB bridge, Raspberry Pi Zero W):
+- The default read method for GCC-4160N/GCC-4240N is method12 (fast decode +
+  raw frame reconstruction + per-block EDC verification).
+- Measured throughput is about 0.3 MB/s for GameCube discs. The USB bridge
+  returns stale cache data on a single read, so two physical READs are required
+  per block; this dominates the time (a GameCube disc takes about 62 minutes).
+- See PATCHES.md for the full analysis and known limitations.
 
 
 ===============================================================================
