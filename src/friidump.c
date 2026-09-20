@@ -264,6 +264,8 @@ void help (void) {
 		"				E7 6B prefixes + per-phase seed correction)\n"
 		"     --method12			Use dumping method 12 (fast + raw frame +\n"
 		"				E7 head/tail + per-block EDC verification)\n"
+		"     --method13			Use dumping method 13 (Hitachi Type2:\n"
+		"				0x80000000 rotating base + 4-sector E7; TODO)\n"
 		" -A, --allmethods		Try all known methods and commands until\n"
 		"				one works.\n"
 #ifdef DEBUG
@@ -306,6 +308,7 @@ bool optparse (int argc, char **argv) {
 		{"method10", 0, 0, 'J'},
 		{"method11", 0, 0, 'K'},
 		{"method12", 0, 0, 'L'},
+		{"method13", 0, 0, 'M'},
 		{"stop", 0, 0, 'p'},
 		{"command", 1, 0, 'c'},
 		{"startsector", 1, 0, 't'},
@@ -420,6 +423,9 @@ bool optparse (int argc, char **argv) {
 				break;
 			case 'L':
 				options.dump_method = 12;
+				break;
+			case 'M':
+				options.dump_method = 13;
 				break;
 			case 'c':
 				options.command = atol (optarg);

@@ -29,6 +29,19 @@
 typedef struct dvd_drive_s dvd_drive;
 
 
+/*! \brief ドライブの読み出し方式ファミリ（E7 のキャッシュ配置・ベース方式）。
+ *
+ * drive_profile テーブルで機種ごとに割り当てる。読み出し関数の選択や、
+ * 将来の Type2 対応の切り分けに使う。 */
+typedef enum {
+	READ_FAMILY_DEFAULT = 0,	//!< 汎用（memdump 実装依存）
+	READ_FAMILY_HITACHI_TYPE1,	//!< 0xA13000 固定ベース（GCC-4160N/4240N）
+	READ_FAMILY_HITACHI_TYPE2,	//!< 0x80000000 回転ベース・4セクタE7（GCC-4241N/4242N）
+	READ_FAMILY_HITACHI_TYPE4	//!< 0x80000000 固定ベース（従来の MN103 系）
+} read_family;
+
+
+
 typedef struct {
 	int sense_key;
 	int asc;
@@ -64,6 +77,8 @@ char *dvd_get_model_string (dvd_drive *dvd);
 bool dvd_get_support_status (dvd_drive *dvd);
 u_int32_t dvd_get_def_method (dvd_drive *dvd);
 u_int32_t dvd_get_command (dvd_drive *dvd);
+u_int32_t dvd_get_mem_base (dvd_drive *dvd);
+read_family dvd_get_read_family (dvd_drive *dvd);
 
 /* The following are exported for use by drive-specific functions */
 typedef int (*dvd_drive_memdump_func) (dvd_drive *dvd, u_int32_t block_off, u_int32_t block_len, u_int32_t block_size, u_int8_t *buf);

@@ -101,6 +101,20 @@
      （`probe_gc_size.py` / `probe_gc_seq.py` / `probe_gc_force.py`）、メディア取りこぼし切り分け（`probe_drop.py`）
    - 詳細は `tools/probe/README.md`（実行時は DIC 等ドライブ使用ツールを停止すること）
 
+10. **`libfriidump/` — 構造整理（データ駆動化と読み出し方式の分離）**
+    - `drive_profile.{c,h}` を追加し、機種ごとの特性（memdump / E7 ベース / 読み出しファミリ /
+      既定 method / コマンド）をテーブル化。`dvd_assign_functions()` はテーブル参照に変更
+    - `disc_fast.c` に method11/12（fast方式・校正・EDC）、`disc_hitachi.c` に method7-10 を移設
+    - `disc_internal.h` に disc 構造体と共有ヘルパーを集約（実装ファイル間のみで共有）
+    - `disc.c` はディスパッチと汎用 method0-6 のみに
+    - **挙動は不変**（GCC-4240N は従来どおり method12 を選択）。armv6 ビルド確認済み
+
+11. **`disc_hitachi.c` / `dvd_drive.c` / `src/friidump.c` — Type2（GCC-4241N/4242N）の下地**
+    - drive_profile に `READ_FAMILY_HITACHI_TYPE2`（`0x80000000` 回転ベース・4セクタE7）を追加し、
+      `GCC-4241N` / `GCC-4242N` を method13 に割当（4242N は新規認識）
+    - `disc_read_sector_13()` は **未実装スタブ**（誤ったデータを返さず明示的に失敗）
+    - `--method13` と help を追加
+
 ## 既知の制限・注意
 
 - **`GCC-4240N(E112)` + `Initio 13FD:1040`** は `0xe7` も通常READも通るが、
@@ -132,16 +146,15 @@
 
 ## 次回対応予定
 
-- **GCC-4241N / GCC-4242N（DIC の 0xe7 Type2_1 / Type2_2）は未対応**
+- **GCC-4241N / GCC-4242N（DIC の 0xe7 Type2_1 / Type2_2）は下地のみ（`disc_read_sector_13` は未実装スタブ）**
   - DIC（`execScsiCmdforDVD.cpp`）では Type2 は `baseAddr≒0x80000000` を
     `0x2040`（= 4セクタ × 2064B）ずつ回転させ、**4セクタ単位の E7** で 1 ブロックを読む方式
-  - 本forkは Type1（`0xA13000` / `method12`）と Type4/3 相当（`0x80000000` 固定 / `method9` 系）のみ実装。
-    GCC-4241N/4242N は `dvd_is_hitachi_family` に含まれるが `0x80000000 + method9` に割り当てられ、
-    実際の Type2 配置と食い違うため正しく読めない
-  - 対応する場合: Type2 用の読み出し（4セクタ E7・回転ベース）を追加し、**実機で配置を実測**、
-    EDC 検証で誤り率を定量化する必要がある
+  - 本forkは Type1（`0xA13000` / `method12`）と Type4/3 相当（`0x80000000` 固定 / `method9` 系）を実装済み。
+    Type2 は drive_profile に行（`READ_FAMILY_HITACHI_TYPE2` / method13）を追加済みで、
+    `GCC-4241N` / `GCC-4242N` は method13 に割当（**読み出し実装は次回**）
+  - 次回: 実機でキャッシュ配置・回転量・4セクタE7 の挙動を実測（`tools/probe/` に配置プローブを追加）し、
+    `disc_read_sector_13()` を実装、EDC 検証で誤り率を定量化する
   - 注意: DIC 公式 README は 4241N/4242N について「吸い出せるが many errors occurred」と明記
-  - 予定: 安価（≤1000円）に入手可能なため、実機でキャッシュ配置を実測してから Type2 対応を検討（未着手）
 
 
 ## ビルド

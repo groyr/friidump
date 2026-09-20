@@ -11,11 +11,16 @@ add_library (
 	byteorder.h
  	constants.h
  	disc.h
+	disc_internal.h
 	disc.c
+	disc_fast.c
+	disc_hitachi.c
 	dumper.h
 	dumper.c
 	dvd_drive.h
 	dvd_drive.c
+	drive_profile.h
+	drive_profile.c
 	hitachi.c
 	ecma-267.h
 	ecma-267.c

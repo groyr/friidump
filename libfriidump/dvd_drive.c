@@ -42,6 +42,7 @@
 #include <errno.h>
 #include "dvd_drive.h"
 #include "disc.h"
+#include "drive_profile.h"
 
 #ifdef WIN32
 #include <windows.h>
@@ -85,6 +86,8 @@ struct dvd_drive_s {
 	char *model_string;		//!< The above three strings, joined in a single one.
 	u_int32_t def_method;
 	u_int32_t command;
+	read_family family;		//!< The read family (cache layout / E7 base scheme).
+	u_int32_t mem_base;		//!< The E7 base address (informational; mainly for debugging).
 
 	/* Device-dependent internal memory dump function */
 	/*! The intended area should start where sector data is stored upon a READ command. Here we assume that sectors are
@@ -304,84 +307,35 @@ static int dvd_get_drive_info (dvd_drive *dvd) {
 
 
 /**
- * Assigns the proper memory dump functions to a dvd_drive object, according to vendor, model and other parameters. Actually this scheme probably needs to
- * to be improved, but it is enough for the moment.
+ * Assigns the proper memory dump functions to a dvd_drive object, according to vendor, model and other parameters.
+ * 機種ごとの特性（memdump / E7 ベース / 読み出しファミリ / 既定 method / コマンド）は
+ * drive_profile テーブル（drive_profile.c）に集約している。
  * @param dvd The DVD drive the command should be exectued on.
  */
-/*! \brief HL-DT-ST（MN103S系）の0xe7メモリダンプ対応ドライブ判定。
- *
- * INQUIRYの製品IDは "DVD-ROM GDR8082N" や "RW/DVD GCC-4240N" のように
- * 接頭辞・スラッシュ表記が機種ごとに異なるため、部分一致で判定する。
- * GCC-4240N/4243N/4244N は redump で 0xe7 による吸い出し実績が報告されている。
- */
-static bool dvd_is_hitachi_family (const char *vendor, const char *prod_id) {
-	static const char *const ids[] = {
-		"GDR8082N", "GDR8161B", "GDR8162B", "GDR8163B", "GDR8164B",
-		"GCC-4160N", "GCC-4240N", "GCC-4241N", "GCC-4243N", "GCC-4244N", "GCC-4247N"
-	};
-	if (strcmp (vendor, "HL-DT-ST") != 0) return false;
-	for (size_t i = 0; i < sizeof (ids) / sizeof (ids[0]); i++) {
-		if (strstr (prod_id, ids[i]) != NULL) return true;
-	}
-	return false;
-}
-
 static void dvd_assign_functions (dvd_drive *dvd, u_int32_t command) {
+	const drive_profile *profile;
+
+	/* 既定値（未対応ドライブ） */
 	dvd -> def_method = 0;
-	if (dvd_is_hitachi_family (dvd -> vendor, dvd -> prod_id)) {
-		/* TODO(次回): GCC-4241N/4242N は DIC の 0xe7 Type2_1/2_2（0x80000000 回転ベース・4セクタE7）。
-		 * 現在は 0x80000000 固定 + method9 に割り当てており、実際の配置と食い違うため正しく読めない。
-		 * 実機でキャッシュ配置を確認後に Type2 対応する（詳細は PATCHES.md の「次回対応予定」）。 */
-		/* GCC-4160N / GCC-4240N はデータフレームが 0xA13000 に載る (DIC の Type1 相当)。
-		 * それ以外の MN103 系は従来の 0x80000000 ベースを使う。 */
-		if (strstr (dvd -> prod_id, "GCC-4160N") != NULL || strstr (dvd -> prod_id, "GCC-4240N") != NULL) {
-			debug ("Hitachi MN103S (0xA13000 base) DVD drive detected, using fast method 12 (raw+EDC)");
-			dvd -> memdump = &hitachi_mn103s_dump_mem;
-			dvd -> def_method = 12;	/* fast方式 + raw生成 + EDC検証（失敗時は raw にフォールバック） */
-		} else {
-			debug ("Hitachi MN103-based DVD drive detected, using Hitachi memory dump command");
-			dvd -> memdump = &hitachi_dvd_dump_mem;
-			dvd -> def_method = 9;
-		}
-		dvd -> command = 2;
-		dvd -> supported = true;
+	dvd -> mem_base = 0;
+	dvd -> family = READ_FAMILY_DEFAULT;
+	dvd -> memdump = &vanilla_2064_dvd_dump_mem;
+	dvd -> command = 0;
+	dvd -> supported = false;
 
-	} else if (strcmp (dvd -> vendor, "LITE-ON") == 0 && (
-		strcmp (dvd ->prod_id, "DVDRW LH-18A1H") == 0 ||
-		strcmp (dvd ->prod_id, "DVDRW LH-18A1P") == 0 ||
-		strcmp (dvd ->prod_id, "DVDRW LH-20A1H") == 0 ||
-		strcmp (dvd ->prod_id, "DVDRW LH-20A1P") == 0
-	)) {
-		debug ("Lite-On DVD drive detected, using Lite-On memory dump command");
-		dvd -> memdump = &liteon_dvd_dump_mem;
-		dvd -> command = 3;
+	profile = drive_profile_lookup (dvd -> vendor, dvd -> prod_id);
+	if (profile) {
+		dvd -> memdump = profile -> memdump;
+		dvd -> mem_base = profile -> mem_base;
+		dvd -> family = profile -> family;
+		dvd -> def_method = profile -> def_method;
+		dvd -> command = profile -> command;
 		dvd -> supported = true;
-		dvd -> def_method = 5;
-
-	} else if (strcmp (dvd -> vendor, "TSSTcorp") == 0 && (
-		strcmp (dvd ->prod_id, "DVD-ROM SH-D162A") == 0 ||
-		strcmp (dvd ->prod_id, "DVD-ROM SH-D162B") == 0 ||
-		strcmp (dvd ->prod_id, "DVD-ROM SH-D162C") == 0 ||
-		strcmp (dvd ->prod_id, "DVD-ROM SH-D162D") == 0
-	)) {
-		debug ("Toshiba Samsung DVD drive detected, using vanilla 2384 memory dump command");
-		dvd -> memdump = &vanilla_2384_dvd_dump_mem;
-		dvd -> command = 1;
-		dvd -> supported = true;
-		dvd -> def_method = 0;
-
-	} else if (strcmp (dvd -> vendor, "PLEXTOR") == 0) {
-		debug ("Plextor DVD drive detected, using vanilla 2064 memory dump command");
-		dvd -> memdump = &vanilla_2064_dvd_dump_mem;
-		dvd -> command = 0;
-		dvd -> supported = true;
-		dvd -> def_method = 2;
-
+		debug ("Drive profile matched: %s %s (family=%d, base=0x%X, method=%d)",
+			dvd -> vendor, dvd -> prod_id, (int) profile -> family, profile -> mem_base, profile -> def_method);
 	} else {
-		/* This is an unsupported drive (yet). */
-		dvd -> memdump = &vanilla_2064_dvd_dump_mem;
-		dvd -> command = 0;
-		dvd -> supported = false;
+		debug ("Unsupported drive (%s %s), using vanilla 2064 memory dump command",
+			dvd -> vendor, dvd -> prod_id);
 	}
 
 	if (command!=-1) {
@@ -398,6 +352,16 @@ static void dvd_assign_functions (dvd_drive *dvd, u_int32_t command) {
 	gen_poly();
 
 	return;
+}
+
+
+u_int32_t dvd_get_mem_base (dvd_drive *dvd) {
+	return (dvd -> mem_base);
+}
+
+
+read_family dvd_get_read_family (dvd_drive *dvd) {
+	return (dvd -> family);
 }
 
 
