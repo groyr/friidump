@@ -16,7 +16,8 @@ set(CMAKE_SYSTEM_PROCESSOR arm)
 set(CMAKE_C_COMPILER arm-linux-gnueabihf-gcc)
 
 # armv6 (arm1176jzf-s) のハードフロート ABI
-set(CMAKE_C_FLAGS_INIT "-march=armv6 -mfpu=vfp -mfloat-abi=hard")
+# -marm: Thumb-1 の hard-float ABI は未実装のため ARM モードを強制する
+set(CMAKE_C_FLAGS_INIT "-march=armv6 -marm -mfpu=vfp -mfloat-abi=hard")
 
 # configure 時のチェック（try_compile）でリンクを行わない
 set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
