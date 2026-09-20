@@ -48,20 +48,23 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install cross toolchain
+      # QEMU で armv6 コンテナを動かし、真の armv6 バイナリをネイティブビルドする。
+      # （x86 の arm-linux-gnueabihf クロスツールチェーンは armv7 の libc をリンクするため
+      #   Pi Zero (armv6) で Illegal instruction になる）
+      - uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm
+      - name: Build in armv6 container
         run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-arm-linux-gnueabihf cmake ninja-build zip
-      - name: Configure
-        run: |
-          cmake -DCMAKE_TOOLCHAIN_FILE=cmake/armv6-toolchain.cmake \
-                -DCMAKE_BUILD_TYPE=Release -DBUILD_STATIC_BINARY=ON \
-                -DHAVE_STDBOOL_H=1 -DHAVE_FSEEKO=1 -DHAVE_FTELLO=1 \
-                -DHAVE_FSEEK64=0 -DHAVE_FTELL64=0 \
-                -DCMAKE_WORDS_BIGENDIAN=0 \
-                -DCMAKE_EXE_LINKER_FLAGS="-static" -B build-armv6
-      - name: Build
-        run: cmake --build build-armv6
+          docker run --rm --platform linux/arm/v6 \
+            -v "$PWD:/src" -w /src arm32v6/alpine:3.20 \
+            sh -c 'apk add --no-cache build-base cmake linux-headers && \
+              cmake -DCMAKE_BUILD_TYPE=Release -DBUILD_STATIC_BINARY=ON \
+                    -DHAVE_STDBOOL_H=1 -DHAVE_FSEEKO=1 -DHAVE_FTELLO=1 \
+                    -DHAVE_FSEEK64=0 -DHAVE_FTELL64=0 \
+                    -DCMAKE_WORDS_BIGENDIAN=0 \
+                    -DCMAKE_EXE_LINKER_FLAGS="-static" -B build-armv6 && \
+              cmake --build build-armv6'
       - name: Package
         run: |
           mkdir -p dist
@@ -85,4 +88,5 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: artifacts/**/*.zip
+          overwrite_files: true
           generate_release_notes: true
