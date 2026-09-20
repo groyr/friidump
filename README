@@ -87,6 +87,19 @@ EDC verification, producing a DIC/redump-compatible scrambled raw image). See
 
 
 ===============================================================================
+Download
+===============================================================================
+Prebuilt binaries for this fork are available on the GitHub Releases page:
+
+  https://github.com/groyr/friidump/releases
+
+- friidump-<version>-win64.zip       ... Windows 64-bit (friidump.exe, static)
+- friidump-<version>-linux-armv6.zip ... Raspberry Pi Zero / armv6
+
+Releases are built automatically by GitHub Actions when a tag (`v*`) is pushed.
+
+
+===============================================================================
 Installation
 ===============================================================================
 If you are a Windows user, probably you will have downloaded the binaries,
