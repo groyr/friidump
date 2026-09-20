@@ -96,7 +96,8 @@ Prebuilt binaries for this fork are available on the GitHub Releases page:
 - friidump-<version>-win64.zip       ... Windows 64-bit (friidump.exe, static)
 - friidump-<version>-linux-armv6.zip ... Raspberry Pi Zero / armv6
 
-Releases are built automatically by GitHub Actions when a tag (`v*`) is pushed.
+Releases are built automatically by GitHub Actions when a version tag (e.g.
+`0.5.3.2`, or `v*`) is pushed.
 
 
 ===============================================================================
