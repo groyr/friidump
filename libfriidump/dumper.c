@@ -32,12 +32,21 @@
 #ifndef WIN32
 #include <unistd.h>
 #include <sys/types.h>
+#include <fcntl.h>
 #else
 #include <io.h>
 #endif
 
-/*! \brief ジャーナルを書き込む間隔（セクタ単位）。20ブロックごと。 */
-#define JOURNAL_INTERVAL 320
+/*! \brief ジャーナルを書き込む間隔（セクタ単位）。
+ * EDC 検証済みの完了位置を記録する。以前は 320（20ブロック）ごとに fsync して
+ * いたが、fsync が吸い出しループを止め SD の書き込みスパイクを招くため、
+ * クラッシュ時の巻き戻りを許容して 8192（512ブロック ≒16MB）ごとに緩和した。 */
+#define JOURNAL_INTERVAL 8192
+
+/*! \brief 出力（raw/iso）の stdio バッファ長。
+ * 毎セクタ fflush すると 1 セクタごとに write syscall が発生するため、
+ * 1MB バッファにまとめてから書き出す。 */
+#define OUTPUT_BUFFER_SIZE (1024 * 1024)
 
 struct dumper_s {
 	disc *dsk;
@@ -63,6 +72,26 @@ struct dumper_s {
 	progress_func progress;
 	void *progress_data;
 };
+
+
+/*! \brief 出力ファイルの領域を事前確保する（microSD の断片化・遅延回避）。
+ * 失敗しても致命的ではないため、戻り値は見ないで呼んでよい。 */
+static void dumper_preallocate (FILE *fp, int64_t size) {
+#ifdef WIN32
+	(void) fp;
+	(void) size;
+#else
+	int fd;
+	if (!fp || size <= 0)
+		return;
+	fd = fileno (fp);
+	if (fd < 0)
+		return;
+	if (posix_fallocate (fd, 0, (off_t) size) != 0) {
+		/* 空き不足などで失敗しても、通常の書き込みでは問題ない */
+	}
+#endif
+}
 
 
 /*! \brief ジャーナルをディスクへ同期する（クラッシュ耐性）。 */
@@ -249,6 +278,8 @@ bool dumper_prepare (dumper *dmp) {
 	/* Setup raw output file */
 	if (dmp -> outfile_raw) {
 		dmp -> fp_raw = fopen (dmp -> outfile_raw, "a+b");
+		if (dmp -> fp_raw)
+			setvbuf (dmp -> fp_raw, NULL, _IOFBF, OUTPUT_BUFFER_SIZE);
 
 		if (dmp -> hashing) {
 			debug ("Calculating hashes for pre-existing raw dump data");
@@ -262,6 +293,7 @@ bool dumper_prepare (dumper *dmp) {
 		/* Now call fseek as file will only be written, from now on */
 		if (my_fseek (dmp -> fp_raw, dmp -> start_sector * RAW_SECTOR_SIZE, SEEK_SET) == 0 &&
 		    ftruncate (fileno (dmp -> fp_raw), (int64_t) dmp -> start_sector * RAW_SECTOR_SIZE) == 0) {
+			dumper_preallocate (dmp -> fp_raw, (int64_t) disc_get_sectors_no (dmp -> dsk) * RAW_SECTOR_SIZE);
 			out = true;
 			debug ("Writing to file \"%s\" in raw format (fseeked() to %lld)", dmp -> outfile_raw, my_ftell (dmp -> fp_raw));
 		} else {
@@ -276,6 +308,8 @@ bool dumper_prepare (dumper *dmp) {
 	/* Setup ISO output file */
 	if (dmp -> outfile_iso) {
 		dmp -> fp_iso = fopen (dmp -> outfile_iso, "a+b");
+		if (dmp -> fp_iso)
+			setvbuf (dmp -> fp_iso, NULL, _IOFBF, OUTPUT_BUFFER_SIZE);
 
 		if (dmp -> hashing) {
 			debug ("Calculating hashes for pre-existing ISO dump data");
@@ -288,6 +322,7 @@ bool dumper_prepare (dumper *dmp) {
 
 		if (my_fseek (dmp -> fp_iso, dmp -> start_sector * SECTOR_SIZE, SEEK_SET) == 0 &&
 		    ftruncate (fileno (dmp -> fp_iso), (int64_t) dmp -> start_sector * SECTOR_SIZE) == 0) {
+			dumper_preallocate (dmp -> fp_iso, (int64_t) disc_get_sectors_no (dmp -> dsk) * SECTOR_SIZE);
 			out = true;
 			debug ("Writing to file \"%s\" in ISO format (fseeked() to %lld)", dmp -> outfile_iso, my_ftell (dmp -> fp_iso));
 		} else {
@@ -371,8 +406,7 @@ int dumper_dump (dumper *dmp, u_int32_t *current_sector) {
 					*(current_sector) = i;
 				}
 
-				if (dmp -> flushing)
-					fflush (dmp -> fp_raw);
+				/* fflush はループ末尾でまとめて行う（毎セクタ write を避ける） */
 
 				if (dmp -> hashing && out)
 					multihash_update (&(dmp -> hash_raw), rawbuf, RAW_SECTOR_SIZE);
@@ -394,14 +428,22 @@ int dumper_dump (dumper *dmp, u_int32_t *current_sector) {
 					*(current_sector) = i;
 				}
 
-				if (dmp -> flushing)
-					fflush (dmp -> fp_iso);
+				/* fflush はループ末尾でまとめて行う（毎セクタ write を避ける） */
 
 				if (dmp -> hashing && out)
 					multihash_update (&(dmp -> hash_iso), isobuf, SECTOR_SIZE);
 			}
 
+			/* 進捗更新の区切り（320 セクタ≒640KB）でだけ出力を flush する。
+			 * 以前は毎セクタ fflush していたが、write syscall を削減するため
+			 * 進捗・ジャーナルと同じ粗い粒度に揃えた。 */
 			if ((i % 320 == 0) || (i == last_sector)) { //speedhack
+				if (dmp -> flushing) {
+					if (dmp -> fp_raw)
+						fflush (dmp -> fp_raw);
+					if (dmp -> fp_iso)
+						fflush (dmp -> fp_iso);
+				}
 				if (dmp -> progress)
 					dmp -> progress (false, i + 1, sectors_no, dmp -> progress_data);
 			}
