@@ -32,7 +32,6 @@
 #ifndef WIN32
 #include <unistd.h>
 #include <sys/types.h>
-#include <fcntl.h>
 #else
 #include <io.h>
 #endif
@@ -72,26 +71,6 @@ struct dumper_s {
 	progress_func progress;
 	void *progress_data;
 };
-
-
-/*! \brief 出力ファイルの領域を事前確保する（microSD の断片化・遅延回避）。
- * 失敗しても致命的ではないため、戻り値は見ないで呼んでよい。 */
-static void dumper_preallocate (FILE *fp, int64_t size) {
-#ifdef WIN32
-	(void) fp;
-	(void) size;
-#else
-	int fd;
-	if (!fp || size <= 0)
-		return;
-	fd = fileno (fp);
-	if (fd < 0)
-		return;
-	if (posix_fallocate (fd, 0, (off_t) size) != 0) {
-		/* 空き不足などで失敗しても、通常の書き込みでは問題ない */
-	}
-#endif
-}
 
 
 /*! \brief ジャーナルをディスクへ同期する（クラッシュ耐性）。 */
@@ -293,7 +272,6 @@ bool dumper_prepare (dumper *dmp) {
 		/* Now call fseek as file will only be written, from now on */
 		if (my_fseek (dmp -> fp_raw, dmp -> start_sector * RAW_SECTOR_SIZE, SEEK_SET) == 0 &&
 		    ftruncate (fileno (dmp -> fp_raw), (int64_t) dmp -> start_sector * RAW_SECTOR_SIZE) == 0) {
-			dumper_preallocate (dmp -> fp_raw, (int64_t) disc_get_sectors_no (dmp -> dsk) * RAW_SECTOR_SIZE);
 			out = true;
 			debug ("Writing to file \"%s\" in raw format (fseeked() to %lld)", dmp -> outfile_raw, my_ftell (dmp -> fp_raw));
 		} else {
@@ -322,7 +300,6 @@ bool dumper_prepare (dumper *dmp) {
 
 		if (my_fseek (dmp -> fp_iso, dmp -> start_sector * SECTOR_SIZE, SEEK_SET) == 0 &&
 		    ftruncate (fileno (dmp -> fp_iso), (int64_t) dmp -> start_sector * SECTOR_SIZE) == 0) {
-			dumper_preallocate (dmp -> fp_iso, (int64_t) disc_get_sectors_no (dmp -> dsk) * SECTOR_SIZE);
 			out = true;
 			debug ("Writing to file \"%s\" in ISO format (fseeked() to %lld)", dmp -> outfile_iso, my_ftell (dmp -> fp_iso));
 		} else {
