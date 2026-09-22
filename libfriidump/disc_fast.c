@@ -44,40 +44,45 @@
  * で復号できる。各セクタ先頭 6B (raw[6:12]) は通常 READ に含まれないため E7(12B) で補う。
  */
 
-/* 1 ブロックを mn103s の raw 経路で読み、host データ(rd)と復号済みデータ(P)を返す。
- * READ は 2 回必要（1 回目は吸収される）。rawout が非 NULL なら生フレームもコピーする。 */
-static bool disc_fast_read_raw_block (disc *d, u_int32_t blk, u_int8_t *rd, u_int8_t *rawout, u_int8_t *P) {
+/* 層検出・層別オフセット（前方宣言） */
+static u_int32_t disc_fast_sn_offset (disc *d, u_int32_t blk);
+static bool disc_fast_detect_layer2 (disc *d);
+
+/* 1 ブロックの生フレームを読む（層の物理アクセス補正込み）。
+ * READ は 2 回必要（1 回目は吸収される）。rawout が非 NULL なら生フレームもコピーする。
+ * method12 と共用するため、この関数は EDC 解除を行わない。 */
+static bool disc_fast_fetch_raw (disc *d, u_int32_t blk, u_int8_t *rd, u_int8_t *rawout) {
 	static u_int8_t rawbuf[RAW_BLOCK_SIZE];
 	u_int32_t lba = blk * SECTORS_PER_BLOCK;
 	int retry;
 
 	for (retry = 0; retry < 5; retry++) {
-		u_int32_t k;
-		bool ok = true;
-
 		if (dvd_read_sector_streaming (d -> dvd, lba, NULL, NULL, 0) < 0)
 			continue;
 		if (dvd_read_sector_streaming (d -> dvd, lba, NULL, rd, BLOCK_SIZE) < 0)
 			continue;
 		if (dvd_memdump (d -> dvd, 0, 1, RAW_BLOCK_SIZE, rawbuf) < 0)
 			continue;
-
-		for (k = 0; k < SECTORS_PER_BLOCK; k++) {
-			u_int32_t sn = ((u_int32_t) rawbuf[k * RAW_SECTOR_SIZE + 1] << 16)
-				| ((u_int32_t) rawbuf[k * RAW_SECTOR_SIZE + 2] << 8)
-				| rawbuf[k * RAW_SECTOR_SIZE + 3];
-			if (sn != lba + k + 0x30000) { ok = false; break; }
-		}
-		if (!ok)
-			continue;
-		/* rawout には unscramble 前の生フレーム（真スクランブル像）を返す */
 		if (rawout)
 			memcpy (rawout, rawbuf, RAW_BLOCK_SIZE);
-		if (!unscrambler_unscramble_16sectors (d -> u, lba, rawbuf, P))
-			continue;
 		return (true);
 	}
 	return (false);
+}
+
+/* 1 ブロックを mn103s の raw 経路で読み、host データ(rd)と復号済みデータ(P)を返す。 */
+static bool disc_fast_read_raw_block (disc *d, u_int32_t blk, u_int8_t *rd, u_int8_t *rawout, u_int8_t *P) {
+	static u_int8_t rawbuf[RAW_BLOCK_SIZE];
+	u_int32_t lba = blk * SECTORS_PER_BLOCK;
+
+	if (!disc_fast_fetch_raw (d, blk, rd, rawbuf))
+		return (false);
+	/* rawout には unscramble 前の生フレーム（真スクランブル像）を返す */
+	if (rawout)
+		memcpy (rawout, rawbuf, RAW_BLOCK_SIZE);
+	if (!unscrambler_unscramble_16sectors (d -> u, lba, rawbuf, P))
+		return (false);
+	return (true);
 }
 
 /* 代表 16 ブロック(16..31)から補正テーブルを作る */
@@ -104,6 +109,35 @@ static bool disc_fast_calibrate (disc *d) {
 	return (true);
 }
 
+/* 第2層用の method11 補正テーブルを作る。第2層の代表 16 ブロックを使う。 */
+static bool disc_fast_calibrate_layer2 (disc *d) {
+	static u_int8_t rd[BLOCK_SIZE];
+	static u_int8_t P[BLOCK_SIZE];
+	u_int32_t base_blk;
+	int m;
+
+	if (d -> fast_ready2)
+		return (true);
+	if (!disc_fast_detect_layer2 (d))
+		return (false);
+
+	base_blk = ((d -> layerbreak / SECTORS_PER_BLOCK) * SECTORS_PER_BLOCK) / SECTORS_PER_BLOCK + 16;
+
+	for (m = 0; m < 16; m++) {
+		u_int32_t k, i;
+		if (!disc_fast_read_raw_block (d, base_blk + m, rd, NULL, P)) {
+			error ("method11 layer2 calibration failed at block %u", base_blk + m);
+			return (false);
+		}
+		for (k = 0; k < SECTORS_PER_BLOCK; k++)
+			for (i = 0; i < SECTOR_SIZE - 6; i++)
+				d -> fast_corr2[m][i] = rd[k * SECTOR_SIZE + i] ^ P[k * SECTOR_SIZE + 6 + i];
+	}
+	d -> fast_ready2 = true;
+	debug ("method11 layer2 calibration done (16 phases)");
+	return (true);
+}
+
 int disc_read_sector_11 (disc *d, u_int32_t sector_no, u_int8_t **data, u_int8_t **rawdata) {
 	static u_int8_t rd[BLOCK_SIZE];
 	static u_int8_t out[BLOCK_SIZE];
@@ -111,26 +145,39 @@ int disc_read_sector_11 (disc *d, u_int32_t sector_no, u_int8_t **data, u_int8_t
 	u_int32_t blk = sector_no / SECTORS_PER_BLOCK;
 	u_int32_t lba = blk * SECTORS_PER_BLOCK;
 	int retry;
+	bool layer2 = false;
+	u_int8_t (*corr)[2042];
 
 	memset (rawbuf, 0, sizeof (rawbuf));	/* fast は raw 出力非対応（合成のみ） */
 
-	/* block0 は seed が例外なので raw 経路で読む */
-	if (blk == 0) {
-		if (!disc_fast_read_raw_block (d, 0, rd, NULL, out)) {
-			error ("fast read failed at block 0");
+	if (d -> layerbreak > 0 && d -> type == DISC_TYPE_WII_DL && lba >= d -> layerbreak)
+		layer2 = true;
+
+	/* block0 と第2層先頭ブロックは seed が例外なので raw 経路で読む */
+	if (blk == 0 || (layer2 && lba == (d -> layerbreak / SECTORS_PER_BLOCK) * SECTORS_PER_BLOCK)) {
+		if (!disc_fast_read_raw_block (d, blk, rd, NULL, out)) {
+			error ("fast read failed at block %u", blk);
 			return (false);
 		}
-		disc_cache_add_block (d, 0, out, rawbuf);
+		disc_cache_add_block (d, blk, out, rawbuf);
 		return (true);
 	}
 
-	if (!disc_fast_calibrate (d))
-		return (false);
+	if (layer2) {
+		if (!disc_fast_calibrate_layer2 (d))
+			return (false);
+		corr = d -> fast_corr2;
+	} else {
+		if (!disc_fast_calibrate (d))
+			return (false);
+		corr = d -> fast_corr;
+	}
 
 	for (retry = 0; retry < 5; retry++) {
 		u_int32_t k, i;
 		int m = blk % 16;
 		bool ok = true;
+		u_int32_t sn_off = disc_fast_sn_offset (d, blk);
 
 		/* READ は 2 回必要（1 回目は吸収される）。PREFETCH(0x34) は
 		 * 本ドライブで ILLEGAL REQUEST のため使わず、常に READ×2 とする。 */
@@ -143,11 +190,11 @@ int disc_read_sector_11 (disc *d, u_int32_t sector_no, u_int8_t **data, u_int8_t
 
 			if (dvd_memdump (d -> dvd, k * RAW_SECTOR_SIZE, 1, 12, e) < 0) { ok = false; break; }
 			sn = ((u_int32_t) e[1] << 16) | ((u_int32_t) e[2] << 8) | e[3];
-			if (sn != lba + k + 0x30000) { ok = false; break; }
+			if (sn != lba + k + sn_off) { ok = false; break; }
 
 			memcpy (out + k * SECTOR_SIZE, e + 6, 6);	/* 先頭 6B は raw から */
 			for (i = 0; i < SECTOR_SIZE - 6; i++)
-				out[k * SECTOR_SIZE + 6 + i] = rd[k * SECTOR_SIZE + i] ^ d -> fast_corr[m][i];
+				out[k * SECTOR_SIZE + 6 + i] = rd[k * SECTOR_SIZE + i] ^ corr[m][i];
 		}
 		if (ok) {
 			disc_cache_add_block (d, blk, out, rawbuf);
@@ -174,6 +221,40 @@ int disc_read_sector_11 (disc *d, u_int32_t sector_no, u_int8_t **data, u_int8_t
  * これにより raw をマスターとして保存でき、かつ全ブロックを EDC で検証できる。
  * 速度は E7 が 1→2 回/セクタに増える分だけ method11 より僅かに遅い。 */
 
+/* 層に応じた生フレームのセクタ番号オフセットを返す。
+ * 第1層: sn = LBA + 0x30000。
+ * 第2層: sn = LBA + layer_sn_offset2（この関数を呼ぶ前に検出済みであること）。 */
+static u_int32_t disc_fast_sn_offset (disc *d, u_int32_t blk) {
+	u_int32_t lba = blk * SECTORS_PER_BLOCK;
+	if (d -> layerbreak > 0 && d -> type == DISC_TYPE_WII_DL && lba >= d -> layerbreak)
+		return (d -> layer_sn_offset2);
+	return (0x30000);
+}
+
+/* 第2層の先頭ブロックを読み、sn - LBA のオフセット layer_sn_offset2 を検出する。
+ * 第2層は第1層と物理セクタ番号の対応が異なる（実測: 一定のオフセット）。 */
+static bool disc_fast_detect_layer2 (disc *d) {
+	static u_int8_t rd[BLOCK_SIZE];
+	static u_int8_t rawbuf[RAW_BLOCK_SIZE];
+	u_int32_t start = (d -> layerbreak / SECTORS_PER_BLOCK) * SECTORS_PER_BLOCK;
+	u_int32_t sn;
+
+	if (d -> layer2_ready)
+		return (true);
+	if (d -> layerbreak == 0 || start == 0)
+		return (false);	/* 単層ディスク */
+
+	if (!disc_fast_fetch_raw (d, start / SECTORS_PER_BLOCK, rd, rawbuf)) {
+		error ("layer2 detect failed at block %u", start / SECTORS_PER_BLOCK);
+		return (false);
+	}
+	sn = ((u_int32_t) rawbuf[1] << 16) | ((u_int32_t) rawbuf[2] << 8) | rawbuf[3];
+	d -> layer_sn_offset2 = sn - start;
+	d -> layer2_ready = true;
+	debug ("layer2 detected: lba=%u sn=0x%X offset2=0x%X", start, sn, d -> layer_sn_offset2);
+	return (true);
+}
+
 /* 代表 16 ブロック(16..31)から drive_cipher12 を作る */
 static bool disc_fast_calibrate12 (disc *d) {
 	static u_int8_t rd[BLOCK_SIZE];
@@ -199,6 +280,38 @@ static bool disc_fast_calibrate12 (disc *d) {
 	return (true);
 }
 
+/* 第2層用の校正テーブルを作る（第2層の代表 16 ブロックを使う）。
+ * 第2層は第1層とドライブ側の逆スクランブル鍵が異なるため、別に校正する。 */
+static bool disc_fast_calibrate12_layer2 (disc *d) {
+	static u_int8_t rd[BLOCK_SIZE];
+	static u_int8_t rawb[RAW_BLOCK_SIZE];
+	static u_int8_t P[BLOCK_SIZE];
+	u_int32_t base_blk;
+	int m;
+
+	if (d -> fast12_ready2)
+		return (true);
+	if (!disc_fast_detect_layer2 (d))
+		return (false);
+
+	/* 第2層の先頭から 16 ブロック分を校正に使う（境界直後は避けて +16 から） */
+	base_blk = ((d -> layerbreak / SECTORS_PER_BLOCK) * SECTORS_PER_BLOCK) / SECTORS_PER_BLOCK + 16;
+
+	for (m = 0; m < 16; m++) {
+		u_int32_t k, i;
+		if (!disc_fast_read_raw_block (d, base_blk + m, rd, rawb, P)) {
+			error ("method12 layer2 calibration failed at block %u", base_blk + m);
+			return (false);
+		}
+		for (k = 0; k < SECTORS_PER_BLOCK; k++)
+			for (i = 0; i < SECTOR_SIZE; i++)
+				d -> drive_cipher12_2[m][i] = rd[k * SECTOR_SIZE + i] ^ rawb[k * RAW_SECTOR_SIZE + 12 + i];
+	}
+	d -> fast12_ready2 = true;
+	debug ("method12 layer2 calibration done (16 phases)");
+	return (true);
+}
+
 int disc_read_sector_12 (disc *d, u_int32_t sector_no, u_int8_t **data, u_int8_t **rawdata) {
 	static u_int8_t rd[BLOCK_SIZE];
 	static u_int8_t rawb[RAW_BLOCK_SIZE];
@@ -207,24 +320,38 @@ int disc_read_sector_12 (disc *d, u_int32_t sector_no, u_int8_t **data, u_int8_t
 	u_int32_t blk = sector_no / SECTORS_PER_BLOCK;
 	u_int32_t lba = blk * SECTORS_PER_BLOCK;
 	int retry;
+	bool layer2 = false;
+	u_int8_t (*cipher)[2048];
 
-	/* block0 は seed が例外なので raw 経路（EDC検証つき）で読む */
-	if (blk == 0) {
-		if (!disc_fast_read_raw_block (d, 0, rd, rawtrue, out)) {
-			error ("method12 read failed at block 0");
+	/* block0 は seed が例外なので raw 経路（EDC検証つき）で読む。
+	 * 第2層の先頭ブロックも層替わりで例外の可能性があるため raw 経路で読む。 */
+	if (d -> layerbreak > 0 && d -> type == DISC_TYPE_WII_DL && lba >= d -> layerbreak)
+		layer2 = true;
+
+	if (blk == 0 || (layer2 && lba == (d -> layerbreak / SECTORS_PER_BLOCK) * SECTORS_PER_BLOCK)) {
+		if (!disc_fast_read_raw_block (d, blk, rd, rawtrue, out)) {
+			error ("method12 read failed at block %u", blk);
 			return (false);
 		}
-		disc_cache_add_block_raw (d, 0, out, rawtrue);
+		disc_cache_add_block_raw (d, blk, out, rawtrue);
 		return (true);
 	}
 
-	if (!disc_fast_calibrate12 (d))
-		return (false);
+	if (layer2) {
+		if (!disc_fast_calibrate12_layer2 (d))
+			return (false);
+		cipher = d -> drive_cipher12_2;
+	} else {
+		if (!disc_fast_calibrate12 (d))
+			return (false);
+		cipher = d -> drive_cipher12;
+	}
 
 	for (retry = 0; retry < 5; retry++) {
 		u_int32_t k, i;
 		int m = blk % 16;
 		bool ok = true;
+		u_int32_t sn_off = disc_fast_sn_offset (d, blk);
 
 		if (dvd_read_sector_streaming (d -> dvd, lba, NULL, NULL, 0) < 0)
 			continue;
@@ -239,13 +366,13 @@ int disc_read_sector_12 (disc *d, u_int32_t sector_no, u_int8_t **data, u_int8_t
 			/* 生フレーム先頭 12B（ID/IED/CPR_MAI） */
 			if (dvd_memdump (d -> dvd, k * RAW_SECTOR_SIZE, 1, 12, head) < 0) { ok = false; break; }
 			sn = ((u_int32_t) head[1] << 16) | ((u_int32_t) head[2] << 8) | head[3];
-			if (sn != lba + k + 0x30000) { ok = false; break; }
+			if (sn != lba + k + sn_off) { ok = false; break; }
 			/* 生フレーム末尾 10B（CPR_MAI 6B + EDC 4B） */
 			if (dvd_memdump (d -> dvd, k * RAW_SECTOR_SIZE + 2054, 1, 10, tail) < 0) { ok = false; break; }
 
 			memcpy (rawb + k * RAW_SECTOR_SIZE, head, 12);
 			for (i = 0; i < SECTOR_SIZE; i++)
-				rawb[k * RAW_SECTOR_SIZE + 12 + i] = rd[k * SECTOR_SIZE + i] ^ d -> drive_cipher12[m][i];
+				rawb[k * RAW_SECTOR_SIZE + 12 + i] = rd[k * SECTOR_SIZE + i] ^ cipher[m][i];
 			memcpy (rawb + k * RAW_SECTOR_SIZE + 2054, tail, 10);
 		}
 		if (!ok) {

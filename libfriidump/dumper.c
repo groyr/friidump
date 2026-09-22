@@ -70,6 +70,14 @@ struct dumper_s {
 	
 	progress_func progress;
 	void *progress_data;
+
+	/*! 明示指定の開始セクタ（-t/--startsector）。未指定は (u_int32_t)-1。
+	 * 指定時は「start_sector から読むが、出力は先頭(0)から書く」部分吸い出しになる。 */
+	u_int32_t forced_start_sector;
+	/*! 出力ファイル上の書き込み開始位置（セクタ単位）。通常 0、resume 時は既存サイズ。 */
+	u_int32_t write_start_sector;
+	/*! 明示指定の終了セクタ（-e/--stopsector、このセクタの手前まで）。未指定は (u_int32_t)-1。 */
+	u_int32_t forced_end_sector;
 };
 
 
@@ -231,6 +239,15 @@ bool dumper_prepare (dumper *dmp) {
 		MY_ASSERT (0);
 	}
 
+	/* 開始セクタの明示指定（-t/--startsector）を優先する。
+	 * 層境界などの部分吸い出し・検証用。16 セクタ境界に丸める。
+	 * 読み出しは start_sector から、出力は先頭(0)から書く。 */
+	if (dmp -> forced_start_sector != (u_int32_t) -1) {
+		dmp -> start_sector = (dmp -> forced_start_sector / SECTORS_PER_BLOCK) * SECTORS_PER_BLOCK;
+		dmp -> write_start_sector = 0;
+		debug ("Forced start sector %u (output from 0)", dmp -> start_sector);
+	}
+
 	/* ジャーナル: raw 優先でパスを決め、resume時は未フラッシュ分を切り捨てる */
 	{
 		const char *base = dmp -> outfile_raw ? dmp -> outfile_raw : dmp -> outfile_iso;
@@ -260,7 +277,8 @@ bool dumper_prepare (dumper *dmp) {
 		if (dmp -> fp_raw)
 			setvbuf (dmp -> fp_raw, NULL, _IOFBF, OUTPUT_BUFFER_SIZE);
 
-		if (dmp -> hashing) {
+		/* -t で開始セクタを明示指定した場合は既存データのハッシュ計算を行わない。 */
+		if (dmp -> hashing && dmp -> forced_start_sector == (u_int32_t) -1) {
 			debug ("Calculating hashes for pre-existing raw dump data");
 			if (dmp -> start_sector > 0) {
 				for (i = 0; i < dmp -> start_sector && (r = fread (buf, RAW_SECTOR_SIZE, 1, dmp -> fp_raw)) > 0; i++)
@@ -270,8 +288,8 @@ bool dumper_prepare (dumper *dmp) {
 		}
 
 		/* Now call fseek as file will only be written, from now on */
-		if (my_fseek (dmp -> fp_raw, dmp -> start_sector * RAW_SECTOR_SIZE, SEEK_SET) == 0 &&
-		    ftruncate (fileno (dmp -> fp_raw), (int64_t) dmp -> start_sector * RAW_SECTOR_SIZE) == 0) {
+		if (my_fseek (dmp -> fp_raw, dmp -> write_start_sector * RAW_SECTOR_SIZE, SEEK_SET) == 0 &&
+		    ftruncate (fileno (dmp -> fp_raw), (int64_t) dmp -> write_start_sector * RAW_SECTOR_SIZE) == 0) {
 			out = true;
 			debug ("Writing to file \"%s\" in raw format (fseeked() to %lld)", dmp -> outfile_raw, my_ftell (dmp -> fp_raw));
 		} else {
@@ -289,7 +307,9 @@ bool dumper_prepare (dumper *dmp) {
 		if (dmp -> fp_iso)
 			setvbuf (dmp -> fp_iso, NULL, _IOFBF, OUTPUT_BUFFER_SIZE);
 
-		if (dmp -> hashing) {
+		/* -t で開始セクタを明示指定した場合は既存データのハッシュ計算を行わない
+		 * （部分吸い出し用。ファイルに前段データが無いため）。 */
+		if (dmp -> hashing && dmp -> forced_start_sector == (u_int32_t) -1) {
 			debug ("Calculating hashes for pre-existing ISO dump data");
 			if (dmp -> start_sector > 0) {
 				for (i = 0; i < dmp -> start_sector && (r = fread (buf, SECTOR_SIZE, 1, dmp -> fp_iso)) > 0; i++)
@@ -298,8 +318,8 @@ bool dumper_prepare (dumper *dmp) {
 			}
 		}
 
-		if (my_fseek (dmp -> fp_iso, dmp -> start_sector * SECTOR_SIZE, SEEK_SET) == 0 &&
-		    ftruncate (fileno (dmp -> fp_iso), (int64_t) dmp -> start_sector * SECTOR_SIZE) == 0) {
+		if (my_fseek (dmp -> fp_iso, dmp -> write_start_sector * SECTOR_SIZE, SEEK_SET) == 0 &&
+		    ftruncate (fileno (dmp -> fp_iso), (int64_t) dmp -> write_start_sector * SECTOR_SIZE) == 0) {
 			out = true;
 			debug ("Writing to file \"%s\" in ISO format (fseeked() to %lld)", dmp -> outfile_iso, my_ftell (dmp -> fp_iso));
 		} else {
@@ -364,8 +384,12 @@ int dumper_dump (dumper *dmp, u_int32_t *current_sector) {
 			dmp -> progress (true, dmp -> start_sector, sectors_no, dmp -> progress_data);
 
 		last_sector=sectors_no-1;
-		
-		for (i = dmp -> start_sector, out = true; i < sectors_no && out; i++) {
+
+		/* -e/--stopsector 指定時はその手前までに制限する（部分吸い出し用）。 */
+		if (dmp -> forced_end_sector != (u_int32_t) -1 && dmp -> forced_end_sector < sectors_no)
+			last_sector = dmp -> forced_end_sector;
+
+		for (i = dmp -> start_sector, out = true; i <= (u_int32_t) last_sector && i < sectors_no && out; i++) {
 			disc_read_sector (dmp -> dsk, i, &isobuf, &rawbuf);
 
 			if (dmp -> fp_raw) {
@@ -455,10 +479,28 @@ dumper *dumper_new (disc *d) {
 	dmp = (dumper *) malloc (sizeof (dumper));
 	memset (dmp, 0, sizeof (dumper));
 	dmp -> dsk = d;
+	dmp -> forced_start_sector = (u_int32_t) -1;
+	dmp -> write_start_sector = 0;
+	dmp -> forced_end_sector = (u_int32_t) -1;
 	dumper_set_hashing (dmp, true);
 	dumper_set_flushing (dmp, true);
 
 	return (dmp);
+}
+
+
+/*! \brief 明示的な開始セクタを設定する（-t/--startsector）。
+ * 層境界付近だけを読む部分吸い出し・検証に使う。 */
+void dumper_set_start_sector (dumper *dmp, u_int32_t start_sector) {
+	dmp -> forced_start_sector = start_sector;
+	return;
+}
+
+
+/*! \brief 明示的な終了セクタを設定する（-e/--stopsector、このセクタの手前まで）。 */
+void dumper_set_end_sector (dumper *dmp, u_int32_t end_sector) {
+	dmp -> forced_end_sector = end_sector;
+	return;
 }
 
 

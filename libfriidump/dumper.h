@@ -38,6 +38,8 @@ FRIIDUMPLIB_EXPORT bool dumper_set_iso_output_file (dumper *dmp, char *outfile_i
 FRIIDUMPLIB_EXPORT bool dumper_prepare (dumper *dmp);
 FRIIDUMPLIB_EXPORT int dumper_dump (dumper *dmp, u_int32_t *current_sector);
 FRIIDUMPLIB_EXPORT dumper *dumper_new (disc *d);
+FRIIDUMPLIB_EXPORT void dumper_set_start_sector (dumper *dmp, u_int32_t start_sector);
+FRIIDUMPLIB_EXPORT void dumper_set_end_sector (dumper *dmp, u_int32_t end_sector);
 FRIIDUMPLIB_EXPORT void dumper_set_progress_callback (dumper *dmp, progress_func progress, void *progress_data);
 FRIIDUMPLIB_EXPORT void dumper_set_hashing (dumper *dmp, bool h);
 FRIIDUMPLIB_EXPORT void dumper_set_flushing (dumper *dmp, bool f);

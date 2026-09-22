@@ -67,6 +67,7 @@ struct {
 	int dump_method;
 	u_int32_t command;
 	u_int32_t start_sector;
+	u_int32_t end_sector;
 	u_int32_t sectors_no;
 	u_int32_t speed;
 	u_int32_t disctype;
@@ -228,6 +229,8 @@ void help (void) {
 		"				1 - Wii\n"
 		"				2 - Wii_DL\n"
 		"				3 - DVD\n"
+		" -t, --startsector <n>		Start dumping from sector <n>\n"
+		" -e, --stopsector <n>		Stop dumping before sector <n>\n"
 		" -S, --size <sectors>		Force disc size\n"
 		" -r, --raw <file>		Output to file <file> in raw format (2064-byte\n"
 		"				sectors)\n"
@@ -312,6 +315,7 @@ bool optparse (int argc, char **argv) {
 		{"stop", 0, 0, 'p'},
 		{"command", 1, 0, 'c'},
 		{"startsector", 1, 0, 't'},
+		{"stopsector", 1, 0, 'e'},
 		{"size", 1, 0, 'S'},
 		{"speed", 1, 0, 'x'},
 		{"type", 1, 0, 'T'},
@@ -341,6 +345,7 @@ bool optparse (int argc, char **argv) {
 	options.dump_method = -1;
 	options.command = -1;
 	options.start_sector = -1;
+	options.end_sector = -1;
 	options.sectors_no = -1;
 	options.speed = -1;
 	options.disctype = -1;
@@ -353,9 +358,9 @@ bool optparse (int argc, char **argv) {
 
 	do {
 #ifdef DEBUG
-		c = getopt_long (argc, argv, "hpagd:r:i:u:Hs0::1::2::3::4::5::6::789c:t:S:x:T:AnfJKL", long_options, &option_index);
+		c = getopt_long (argc, argv, "hpagd:r:i:u:Hs0::1::2::3::4::5::6::789c:t:e:S:x:T:AnfJKL", long_options, &option_index);
 #else
-		c = getopt_long (argc, argv, "hpagd:r:i:u:Hs0::1::2::3::4::5::6::789c:t:S:x:T:AJKL", long_options, &option_index);
+		c = getopt_long (argc, argv, "hpagd:r:i:u:Hs0::1::2::3::4::5::6::789c:t:e:S:x:T:AJKL", long_options, &option_index);
 #endif
 
 		switch (c) {
@@ -436,6 +441,9 @@ bool optparse (int argc, char **argv) {
 				break;
 			case 't':
 				options.start_sector = atol (optarg);
+				break;
+			case 'e':
+				options.end_sector = atol (optarg);
 				break;
 			case 'S':
 				options.sectors_no = atol (optarg);
@@ -578,8 +586,8 @@ int dologic (disc *d, progstats stats) {
 					else fprintf (stderr, 
 						"Disc size..........: %d\n", disc_get_sectors_no(d));
 
-					if (disc_get_layerbreak(d)>0 && type_id==DISC_TYPE_DVD) fprintf (stderr, 
-						"Layer break........: %d\n", disc_get_layerbreak(d));
+	if (disc_get_layerbreak(d)>0 && (type_id==DISC_TYPE_DVD || type_id==DISC_TYPE_WII_DL)) fprintf (stderr,
+		"Layer break........: %d\n", disc_get_layerbreak(d));
 
 					if ((type_id==DISC_TYPE_GAMECUBE) || (type_id==DISC_TYPE_WII) || (type_id==DISC_TYPE_WII_DL)) fprintf (stderr, 
 						"Game ID............: %s\n"
@@ -618,6 +626,10 @@ int dologic (disc *d, progstats stats) {
 
 						dumper_set_hashing (dmp, !options.no_hashing);
 						dumper_set_flushing (dmp, !options.no_flushing);
+						if (options.start_sector != (u_int32_t) -1)
+							dumper_set_start_sector (dmp, options.start_sector);
+						if (options.end_sector != (u_int32_t) -1)
+							dumper_set_end_sector (dmp, options.end_sector);
 
 						if (!dumper_set_raw_output_file (dmp, options.raw_out, options.resume)) {
 							fprintf (stderr, "Cannot setup raw output file\n");

@@ -386,7 +386,7 @@ static disc_type disc_detect_type (disc *d, u_int32_t forced_type, u_int32_t sec
 	} else if (forced_type==2) {
 		d -> type = DISC_TYPE_WII_DL;
 		d -> sectors_no = DISC_WII_SECTORS_NO_DL;
-		//dvd_get_layerbreak(d->dvd, &(d -> layerbreak), NULL);
+		dvd_get_layerbreak(d->dvd, &(d -> layerbreak), NULL);
 	} else if (forced_type==3) {
 		d -> type = DISC_TYPE_DVD;
 		if (sectors_no == -1) dvd_get_size(d->dvd, &(d -> sectors_no), NULL);
@@ -404,7 +404,7 @@ static disc_type disc_detect_type (disc *d, u_int32_t forced_type, u_int32_t sec
 		} else {
 			d -> type = DISC_TYPE_WII_DL;
 			d -> sectors_no = DISC_WII_SECTORS_NO_DL;
-			//dvd_get_layerbreak(d->dvd, &(d -> layerbreak), NULL);
+			dvd_get_layerbreak(d->dvd, &(d -> layerbreak), NULL);
 		}
 	}
 

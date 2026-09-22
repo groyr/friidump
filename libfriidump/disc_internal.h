@@ -86,6 +86,19 @@ struct disc_s {
 	 * これで host データから生フレーム raw[12:2060] を復元できる。 */
 	bool fast12_ready;
 	u_int8_t drive_cipher12[16][2048];
+
+	/* 二層ディスク(Wii DL)対応。
+	 * 第2層は READ(12) に渡す LBA と物理セクタ番号(sn)の関係が第1層と異なる。
+	 * 実測: 第1層 sn = LBA + 0x30000、第2層 sn = LBA + layer_sn_offset2。
+	 * layer_sn_offset2 は第2層先頭ブロックの sn から算出する（0 なら未確定）。 */
+	u_int32_t layer_sn_offset2;
+	bool layer2_ready;
+	/* 第2層用の校正テーブル（第1層と層が異なるため別に持つ）。 */
+	bool fast12_ready2;
+	u_int8_t drive_cipher12_2[16][2048];
+	/* 第2層用の method11 補正テーブル（corr[m][i] = rd[i] XOR P[6+i]）。 */
+	bool fast_ready2;
+	u_int8_t fast_corr2[16][2042];
 };
 
 
