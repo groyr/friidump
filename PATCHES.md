@@ -75,8 +75,11 @@
      - ISO MD5 = redump `60a52be1d4d5fadc3838d73d6de200f5`（1,459,978,240B）
      - `/dev/sgN` + `O_RDWR` で ~0.31 MB/s（~80分）
 
-6d. **`libfriidump/dumper.c` — ジャーナル（テール破損対策 / resume 安全化）**
-   - `<raw|iso>.journal` に **EDC検証済みの完了位置**を 320 セクタ毎に `fsync` 記録
+6d. **`libfriidump/dumper.c` — ジャーナル（テール破損対策 / resume 安全化）と出力 I/O の緩和**
+   - `<raw|iso>.journal` に **EDC検証済みの完了位置**を **8192 セクタ毎**（≒16MB）に `fsync` 記録
+     （当初は 320 セクタ毎。fsync が読み出しループを止め SD の書き込みスパイクを招くため緩和）
+   - 出力(raw/iso)に **1MB の stdio バッファ**を設定し、**毎セクタ `fflush` を撤去**
+     （進捗更新・ジャーナルと同じ 320 セクタ粒度でまとめて flush）
    - resume 時はファイルサイズとジャーナルの**小さい方**を採用し、未フラッシュ／破損テールを切り捨て
    - 破壊テスト（末尾破壊 → ジャーナル手前から再開）で ISO/RAW の一致回復を確認
 
@@ -115,8 +118,30 @@
     - `disc_read_sector_13()` は **未実装スタブ**（誤ったデータを返さず明示的に失敗）
     - `--method13` と help を追加
 
+12. **`libfriidump/` — Wii DL（二層）の第2層読み出しに対応**
+    - `disc.c`: Wii_DL 判定時に `dvd_get_layerbreak` を有効化（`0xAD READ DVD STRUCTURE`）
+    - `disc_fast.c`: 第2層の物理セクタ番号オフセット `layer_sn_offset2` を検出し、層別に
+      校正テーブルを持つ（method11: `fast_corr2` / method12: `drive_cipher12_2`）。
+      第2層は逆回転ではなく、LBA をそのまま READ に渡せば読める
+    - 層の先頭ブロックは seed 例外のため raw 経路で読む
+    - `src/friidump.c` / `dumper.{c,h}`: `-t/--startsector`・`-e/--stopsector`（部分吸い出し）を追加。
+      `-t` 指定時は出力を先頭(0)から書き、既存データのハッシュ再計算をスキップ
+    - 実測（Pi Zero + GCC-4240N + Initio）: layerbreak=2,084,960 / 総セクタ=4,155,840。
+      層境界 ±32 セクタをまたぐ読み出しは warn=0・EDC 通過
+    - 第2層の実データ速度: **method11 が唯一実用**（校正後 ~0.44MB/s）。
+      method12 は 0.0002MB/s、method0/2 は 0.017MB/s で実用不可
+    - `-e` は「指定セクタを含む」実装（`-e end` は end を含む）。フル吸い出しの bit-exact 検証は
+      USB ブリッジの不安定さにより未完（下記「既知の制限」参照）
+
 ## 既知の制限・注意
 
+- **USB ブリッジ（Initio 13FD:1040）は長時間の読み出しで USB から切断する**（最優先の課題）
+  - 症状: `usb 1-1: device descriptor read/64, error -110` → `USB disconnect` →
+    `usb1-port1: attempt power cycle`（**復帰せず、物理再挿しが必要**）
+  - 吸い出し結果が **ゼロで埋まる**（ドライブがゼロを返す）。破損位置は実行ごとに変わる
+  - 外部 5V 給電でも発生。**ブリッジ自体（信号品質/ファーム）が原因**の可能性が高く、
+    **別の USB-IDE/SATA ブリッジ**を推奨。長時間運用はチャンク分割＋再挿し前提
+  - 参考: ディスクの限界領域（傷・汚れ）でも同様にゼロ/データが不安定になることがある
 - **`GCC-4240N(E112)` + `Initio 13FD:1040`** は `0xe7` も通常READも通るが、
   GCの連続読み出しでドライブが **READ完了を待たず stale を返す**（単発 READ は無視される）。
   - 対策: **READ を 2 回発行してから E7 を読む**（`method11`/`method12` の前提）

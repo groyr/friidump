@@ -41,7 +41,7 @@
 #define PACKAGE_NAME "FriiDump"
 
 /* Define to the version of this package. */
-#define PACKAGE_VERSION "0.5.3.1"
+#define PACKAGE_VERSION "0.6.0"
 
 
 #ifdef WIN32

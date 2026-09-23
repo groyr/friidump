@@ -64,12 +64,16 @@ Currently supported drives are:
 - LG GDR-8164B (HL-DT-ST/DVD-ROM GDR8164B)
 
 This fork additionally treats the following Hitachi-LG (MN103S) drives as
-supported, using the `0xe7` vendor memory-dump command with base address
-`0xA13000` (read method 10):
-- HL-DT-ST RW/DVD GCC-4160N
-- HL-DT-ST RW/DVD GCC-4240N (verified on real hardware)
-- HL-DT-ST RW/DVD GCC-4241N / GCC-4243N / GCC-4244N / GCC-4247N
-- LG GDR-8082N / GDR-8161B / GDR-8162B / GDR-8163B / GDR-8164B
+supported via the `0xe7` vendor memory-dump command. The base address and the
+default read method are drive-dependent (`libfriidump/drive_profile.c`):
+
+- HL-DT-ST RW/DVD GCC-4160N / GCC-4240N ... base `0xA13000`, default method12
+  (fast; verified on real hardware)
+- HL-DT-ST RW/DVD GCC-4241N / GCC-4242N ... Type2, base `0x80000000`, method13
+  (stub — not yet implemented)
+- HL-DT-ST RW/DVD GCC-4243N / GCC-4244N / GCC-4247N ... Type4, base `0x80000000`, method9
+- LG GDR-8082N / GDR-8161B / GDR-8162B / GDR-8163B / GDR-8164B ... Type4,
+  base `0x80000000`, method9
 
 Other drives might work, most likely those based on the Hitachi MN103
 microcontroller. If you find any of them, please report so that they can be
@@ -99,9 +103,11 @@ Prebuilt binaries for this fork are available on the GitHub Releases page:
 Releases are built automatically by GitHub Actions when a version tag (e.g.
 `0.5.3.2`, or `v*`) is pushed.
 
-This fork is based on FriiDump 0.5.3.1. Wii dual-layer discs are not yet
-supported by the fork's read methods (method13 is a stub for Hitachi Type2);
-see PATCHES.md.
+This fork's version is **0.6.0** (based on upstream FriiDump 0.5.3.1). **Wii dual-layer (DL) discs are
+supported** by the fork's read methods: the second layer's sector-number offset
+is detected and a per-layer descramble calibration is used. DL dumping is
+experimental and needs a reliable USB bridge (see `AGENTS.md`, "Known issues").
+method13 remains a stub for Hitachi Type2 drives; see PATCHES.md.
 
 
 ===============================================================================
@@ -165,9 +171,9 @@ On Linux, pass the SCSI generic character device (for example `-d /dev/sg0`),
 not the block device (`/dev/sr0`): the `0xe7` vendor command is rejected on block
 devices without CAP_SYS_RAWIO. Use `-g` for machine-readable progress output.
 
-Read methods 10-13 are implemented for Hitachi-LG (MN103S) drives. The default for
-GCC-4160N/GCC-4240N is method12 (fast decode + raw frame + per-block EDC). See
-PATCHES.md for the method details.
+Read methods 10-12 are implemented for Hitachi-LG (MN103S) drives (method13 is
+a stub for Hitachi Type2). The default for GCC-4160N/GCC-4240N is method12
+(fast decode + raw frame + per-block EDC). See PATCHES.md for the method details.
 
 Finally, use -h for a listing of all available options.
 
