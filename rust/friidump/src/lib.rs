@@ -9,6 +9,7 @@
 //! - 失敗は `Result` で伝播する（リファクタ項目 R2）
 
 pub mod constants;
+pub mod drive;
 pub mod ecma267;
 pub mod error;
 pub mod hasher;
