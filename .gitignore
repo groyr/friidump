@@ -11,3 +11,6 @@ __pycache__/
 *.a
 *.so
 *.exe
+# Rust
+/rust/**/target/
+/rust/target/

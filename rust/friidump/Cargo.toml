@@ -1,0 +1,20 @@
+[package]
+name = "friidump"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-2.0-or-later"
+description = "GameCube / Wii ディスク吸い出し CLI（Rust 移植・進行中）"
+
+[[bin]]
+name = "friidump-rs"
+path = "src/main.rs"
+
+[lib]
+name = "friidump"
+path = "src/lib.rs"
+
+[features]
+default = []
+# OS 依存のデバイス I/O は feature で切り替える（armv6 ビルドの依存を最小化するため）
+unix = []
+windows = []
