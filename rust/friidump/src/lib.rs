@@ -11,7 +11,9 @@
 pub mod constants;
 pub mod ecma267;
 pub mod error;
+pub mod hasher;
 pub mod log;
+pub mod metadata;
 pub mod unscrambler;
 
 pub use error::{Error, Result};

@@ -4,6 +4,7 @@
 //! 生成し、`tests/vectors/` に固定している。
 
 use friidump::ecma267::{edc_calc, Lfsr};
+use friidump::hasher::MultiHash;
 use friidump::unscrambler::Unscrambler;
 use std::path::PathBuf;
 
@@ -59,6 +60,35 @@ fn lfsr_matches_c() {
         count += 1;
     }
     assert!(count >= 5, "LFSR ベクタが不足しています");
+}
+
+#[test]
+fn hashes_match_c() {
+    let text = std::fs::read_to_string(vectors_dir().join("hash.txt")).unwrap();
+    let mut count = 0;
+    for line in text.lines().filter(|l| !l.trim().is_empty()) {
+        let mut it = line.split_whitespace();
+        let len: usize = it.next().unwrap().parse().unwrap();
+        let data_field = it.next().unwrap();
+        let data = if data_field == "-" {
+            Vec::new()
+        } else {
+            decode_hex(data_field)
+        };
+        let crc32 = it.next().unwrap();
+        let md5 = it.next().unwrap();
+        let sha1 = it.next().unwrap();
+
+        assert_eq!(data.len(), len);
+        let mut mh = MultiHash::new();
+        mh.update(&data);
+        let d = mh.finish();
+        assert_eq!(d.crc32, crc32, "CRC32 不一致 (len={len})");
+        assert_eq!(d.md5, md5, "MD5 不一致 (len={len})");
+        assert_eq!(d.sha1, sha1, "SHA-1 不一致 (len={len})");
+        count += 1;
+    }
+    assert!(count >= 4, "ハッシュベクタが不足しています");
 }
 
 #[test]

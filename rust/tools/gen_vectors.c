@@ -20,6 +20,7 @@
 #include "constants.h"
 #include "ecma-267.h"
 #include "unscrambler.h"
+#include "multihash.h"
 
 #define EDC_LENGTH (RAW_SECTOR_SIZE - 4)
 
@@ -88,6 +89,28 @@ static void emit_edc(FILE *f, const unsigned char *data, size_t len) {
 	fprintf(f, " %08x\n", edc);
 }
 
+/* libmultihash によるハッシュを 1 行で出力する。
+ * 形式: <len> <hex|-> <crc32> <md5> <sha1>
+ *
+ * 注意: C 版 SHA1Update は入力バッファを破壊する（内部で transform が
+ * 呼び出し側バッファを直接書き換える）ため、hex はハッシュ計算の「前に」出力する。 */
+static void emit_hash(FILE *f, const unsigned char *data, size_t len) {
+	multihash mh;
+
+	fprintf(f, "%zu ", len);
+	if (len)
+		to_hex(f, data, len);
+	else
+		fprintf(f, "-");
+
+	multihash_init(&mh);
+	if (len)
+		multihash_update(&mh, (unsigned char *) data, (int) len);
+	multihash_finish(&mh);
+
+	fprintf(f, " %s %s %s\n", mh.crc32_s, mh.md5_s, mh.sha1_s);
+}
+
 int main(int argc, char **argv) {
 	const char *dir = (argc > 1) ? argv[1] : ".";
 	char path[1024];
@@ -117,6 +140,24 @@ int main(int argc, char **argv) {
 		emit_edc(f, c2, sizeof(c2));
 		emit_edc(f, c3, sizeof(c3));
 		emit_edc(f, c3, 100);
+	}
+	fclose(f);
+
+	/* ---- hash.txt: libmultihash による CRC32/MD5/SHA1 ---- */
+	snprintf(path, sizeof(path), "%s/hash.txt", dir);
+	f = fopen(path, "wb");
+	if (!f) { perror(path); return 1; }
+	{
+		static unsigned char hbuf[2048];
+		unsigned int x = 0xC0FFEE42u;
+		emit_hash(f, (const unsigned char *) "", 0);
+		emit_hash(f, (const unsigned char *) "abc", 3);
+		for (i = 0; i < sizeof(hbuf); i++) {
+			x = x * 1664525u + 1013904223u;
+			hbuf[i] = (unsigned char) (x >> 24);
+		}
+		emit_hash(f, hbuf, 1000);
+		emit_hash(f, hbuf, sizeof(hbuf));
 	}
 	fclose(f);
 
