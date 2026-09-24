@@ -52,6 +52,8 @@ pub struct Dumper<'a, D: ScsiDevice> {
     start_sector: u32,
     write_start_sector: u32,
     progress: Option<ProgressFn<'a>>,
+    /// ジャーナル書き込み間隔（セクタ。`--journal-interval` で変更）。
+    journal_interval: u32,
 }
 
 impl<'a, D: ScsiDevice> Dumper<'a, D> {
@@ -75,7 +77,13 @@ impl<'a, D: ScsiDevice> Dumper<'a, D> {
             start_sector: 0,
             write_start_sector: 0,
             progress: None,
+            journal_interval: JOURNAL_INTERVAL,
         }
+    }
+
+    /// ジャーナル書き込み間隔（セクタ）を設定する。0 は無効化。
+    pub fn set_journal_interval(&mut self, n: u32) {
+        self.journal_interval = n;
     }
 
     /// ハッシュ計算の有無。
@@ -151,6 +159,12 @@ impl<'a, D: ScsiDevice> Dumper<'a, D> {
                     if j > 0 && j < self.start_sector {
                         let spb = SECTORS_PER_BLOCK as u32;
                         self.start_sector = (j / spb) * spb;
+                        // 書き込み位置も読み出し開始に合わせる。ファイルが journal より
+                        // 進んでいる（未同期分）ときに両者がズレると、以降のデータが
+                        // シフトして破損するため。
+                        if self.forced_start.is_none() {
+                            self.write_start_sector = self.start_sector;
+                        }
                     }
                 }
             }
@@ -250,9 +264,22 @@ impl<'a, D: ScsiDevice> Dumper<'a, D> {
         let mut iso_sector = [0u8; SECTOR_SIZE];
         let mut raw_sector = [0u8; RAW_SECTOR_SIZE];
         for i in self.start_sector..=last {
-            self.disc
-                .read_sector(i)
-                .map_err(|e| Error::Other(format!("sector {i} の読み出しに失敗: {e}")))?;
+            if let Err(e) = self.disc.read_sector(i) {
+                // 失敗セクタをジャーナルへ記録し、フラッシュしてから中断する。
+                // resume はブロック境界へ丸めるため、失敗セクタのブロックから再読される。
+                if let Some(j) = self.journal.as_mut() {
+                    let _ = write_journal(j, i);
+                }
+                if self.flushing {
+                    if let Some(f) = self.raw.as_mut() {
+                        let _ = f.flush();
+                    }
+                    if let Some(f) = self.iso.as_mut() {
+                        let _ = f.flush();
+                    }
+                }
+                return Err(Error::Other(format!("sector {i} の読み出しに失敗: {e}")));
+            }
             {
                 let (d, r) = self
                     .disc
@@ -293,7 +320,9 @@ impl<'a, D: ScsiDevice> Dumper<'a, D> {
             }
 
             if let Some(j) = self.journal.as_mut() {
-                if ((i + 1) % JOURNAL_INTERVAL == 0) || i == last {
+                if self.journal_interval > 0
+                    && (((i + 1) % self.journal_interval == 0) || i == last)
+                {
                     write_journal(j, i + 1)?;
                 }
             }

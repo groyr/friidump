@@ -149,6 +149,17 @@ impl<D: ScsiDevice> Disc<D> {
         (self.layerbreak / SECTORS_PER_BLOCK as u32) * SECTORS_PER_BLOCK as u32
     }
 
+    /// 第 2 層の校正に使う基点ブロック（位相 0 に整列した 16 ブロック）。
+    ///
+    /// 校正は位相 0..15 の 16 ブロックを読むため、基点を 16 ブロック境界へ切り上げる。
+    /// 層先頭ブロックの位相が 0 でない場合（例: 層先頭ブロック 130310 は位相 6）に
+    /// `drive_cipher12_2[m]` が位相ズレして fast path が失敗するのを防ぐ。
+    fn layer_calib_base_blk(&self) -> u32 {
+        let spb = SECTORS_PER_BLOCK as u32;
+        let start_blk = self.layer_start_lba() / spb;
+        ((start_blk + spb - 1) / spb) * spb + spb
+    }
+
     /// 生フレームのセクタ番号オフセット（C 版 `disc_fast_sn_offset`）。
     fn sn_offset(&self, blk: u32) -> u32 {
         let lba = blk * SECTORS_PER_BLOCK as u32;
@@ -246,7 +257,7 @@ impl<D: ScsiDevice> Disc<D> {
             return Ok(());
         }
         self.detect_layer2()?;
-        let base_blk = self.layer_start_lba() / SECTORS_PER_BLOCK as u32 + 16;
+        let base_blk = self.layer_calib_base_blk();
         for m in 0..SECTORS_PER_BLOCK {
             let mut rd = [0u8; BLOCK_SIZE];
             let mut p = [0u8; BLOCK_SIZE];
@@ -394,7 +405,7 @@ impl<D: ScsiDevice> Disc<D> {
             return Ok(());
         }
         self.detect_layer2()?;
-        let base_blk = self.layer_start_lba() / SECTORS_PER_BLOCK as u32 + 16;
+        let base_blk = self.layer_calib_base_blk();
         for m in 0..SECTORS_PER_BLOCK {
             let mut rd = [0u8; BLOCK_SIZE];
             let mut rawb = [0u8; RAW_BLOCK_SIZE];

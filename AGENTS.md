@@ -30,6 +30,26 @@ target/release/friidump -u out.raw -i out.iso
 - `-T <n>` で型強制（0=GameCube / 1=Wii / 2=Wii_DL / 3=DVD）
 - 対応ドライブの既定 method は `src/drive/profile.rs` が決める
 
+## 無人運転・復旧（USB 切断対策）
+
+USB ブリッジ切断で長丁場の吸い出しが落ちる問題に対し、以下を実装済み:
+
+- `--reconnect <sec>`: デバイス消失時に復帰を待つ秒数。復帰したら **自動で reopen → 再校正 →
+  journal 位置から resume**。タイムアウトすると exit code **10**
+- `--recover-cmd <cmd>`: デバイス消失時に実行（例 `uhubctl -a cycle -p 1`）
+- `--on-stall <cmd>`: 復帰待ちタイムアウト時に実行（例 `systemctl reboot`）
+- `--journal-interval <n>`: ジャーナル書き込み間隔（セクタ。既定 8192。推奨 1024）
+- 読み出し失敗時は失敗セクタをジャーナルへ即記録して中断（**ゼロ埋めしない**）
+- 全ディスク完了時は `<out>.done` を残す（外部監視の完了判定用）
+- 終了コード: `0`=完了 / `10`=デバイス消失 / `11`=メディアエラー / `1`=その他
+
+`--reconnect` と `--on-stall` を組み合わせれば、復帰不能時に再起動して `-s` で再開する
+外部スーパーバイザを組める（本リポジトリには同梱しない）。
+
+**速度低下（重要）**: カーネル（udev/blkid）が `/dev/sr0` をプレーン READ で繰り返し読むと
+USB ブリッジを奪われ dump が極端に遅くなる（実測 0.26 → 0.005 MB/s）。`sr_mod` を unbind して
+止めると改善する（`/dev/sg0` は残るので SG_IO は使える）。
+
 ## リポジトリ構成
 
 | パス | 内容 |
@@ -75,6 +95,9 @@ target/release/friidump -u out.raw -i out.iso
 - 症状: 吸い出しがゼロで埋まる。破損箇所は実行ごとに変わる
 - 対策: **別の USB-IDE/SATA ブリッジ**を使う。長時間運用はチャンク分割＋再挿し前提
 - journal（`<file>.journal` の `next=<sector>`）と `-s` で途中再開できる
+- 自動復旧: `--reconnect` で復帰待ち → 復帰すれば自動 resume。復帰不能なら `--on-stall` で
+  再起動し、起動後に外部スーパーバイザが `-s` で再開できる。ただし再起動で USB が
+  再列挙されない場合は切替ハブ（`uhubctl`）等が必要
 
 ### 2. Pi Zero W でドライブ接続時に Pi がハング → `dwc_otg.fiq_enable=0` で解消
 
@@ -102,7 +125,7 @@ target/release/friidump -u out.raw -i out.iso
 2. Windows SPTI バックエンド
 3. 出力 I/O のスレッド分離（読み出しと書き込みの直列化を解消）
 4. CI（`cargo test` とリリースビルドの常時実行）
-5. Wii DL の redump 照合（良質なブリッジ入手後）
+5. ~~Wii DL の redump 照合~~（完了: RSBJ01 が redump Rev 1 と完全一致）
 
 ## ライセンス
 

@@ -27,3 +27,15 @@ FriiDump - GameCube/Wii ディスク吸い出しツール
   -L, --method12                 fast + raw + 全ブロック EDC（既定・推奨）
   -M, --method13                 Hitachi Type2（未実装）
   -A, --allmethods               全 method を試す（未実装）
+
+復旧オプション:
+  --reconnect <sec>              デバイス消失時に復帰を待つ秒数（0 で無効）
+  --recover-cmd <cmd>            デバイス消失時に実行するコマンド（例: uhubctl -a cycle -p 1）
+  --on-stall <cmd>               復帰待ちがタイムアウトしたら実行（例: systemctl reboot）
+  --journal-interval <n>         ジャーナル書き込み間隔（セクタ。既定 8192）
+
+終了コード:
+  0  完了
+  10 デバイス消失（復帰待ちタイムアウト。再接続して -s で再開可能）
+  11 メディア読み出しの永続的失敗
+  1  その他のエラー

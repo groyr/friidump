@@ -104,10 +104,10 @@ Prebuilt binaries are published on this repository's Releases page:
 Releases are built automatically by GitHub Actions when a version tag (e.g.
 `v*`) is pushed.
 
-This project's version is **0.7.0** (based on upstream FriiDump 0.5.3.1). **Wii dual-layer (DL) discs are
+This project's version is **0.8.0** (based on upstream FriiDump 0.5.3.1). **Wii dual-layer (DL) discs are
 supported** by the implemented read methods: the second layer's sector-number offset
-is detected and a per-layer descramble calibration is used. DL dumping is
-experimental and needs a reliable USB bridge (see `AGENTS.md`, "Known issues").
+is detected and a per-layer descramble calibration is used. DL dumping is verified:
+the ISO of a Wii DL disc matches redump (CRC-32 / MD5 / SHA-1 identical).
 method13 remains a stub for Hitachi Type2 drives; see PATCHES.md.
 
 

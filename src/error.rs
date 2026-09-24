@@ -18,6 +18,10 @@ pub enum Error {
     Unscramble(String),
     /// 指定セクタの seed が見つからなかった。
     SeedNotFound(u32),
+    /// デバイスが消失した（USB 切断など）。再接続で復帰しうる。
+    DeviceLost(String),
+    /// メディア読み出しが永続的に失敗した（デバイスは生存）。
+    MediaError(String),
     /// その他のエラー。
     Other(String),
 }
@@ -30,6 +34,8 @@ impl fmt::Display for Error {
             Error::Unsupported(s) => write!(f, "未対応です: {s}"),
             Error::Unscramble(s) => write!(f, "スクランブル解除に失敗しました: {s}"),
             Error::SeedNotFound(sec) => write!(f, "セクタ {sec} の seed が見つかりません"),
+            Error::DeviceLost(s) => write!(f, "デバイスが消失しました: {s}"),
+            Error::MediaError(s) => write!(f, "メディア読み出しに失敗しました: {s}"),
             Error::Other(s) => write!(f, "{s}"),
         }
     }

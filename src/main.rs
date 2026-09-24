@@ -28,6 +28,14 @@ fn main() -> ExitCode {
 
     match run(&opts) {
         Ok(()) => ExitCode::SUCCESS,
+        Err(Error::DeviceLost(m)) => {
+            eprintln!("エラー: {m}");
+            ExitCode::from(10)
+        }
+        Err(Error::MediaError(m)) => {
+            eprintln!("エラー: {m}");
+            ExitCode::from(11)
+        }
         Err(e) => {
             eprintln!("エラー: {e}");
             ExitCode::FAILURE
@@ -84,8 +92,118 @@ fn run_unscramble(opts: &Options, input: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
+/// 吸い出しを駆動する。デバイス消失時は復帰を待って自動 resume する。
 #[cfg(target_os = "linux")]
 fn run_device(opts: &Options) -> Result<()> {
+    /// 同一実行内で許容する再接続試行の上限（暴走防止）。
+    const MAX_RECONNECT_ATTEMPTS: u32 = 1000;
+    /// デバイス生存時の一時エラーに対する即時再試行回数。
+    const ALIVE_RETRIES: u32 = 3;
+
+    let device = opts
+        .device
+        .clone()
+        .ok_or_else(|| Error::InvalidArgument("デバイスが指定されていません".to_string()))?;
+    let reconnect = opts.reconnect_secs.unwrap_or(0);
+    let mut resume = opts.resume;
+    let mut attempt: u32 = 0;
+    let mut alive_retries: u32 = 0;
+
+    loop {
+        match dump_once(opts, resume) {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                // 引数・未対応はそのまま返す（再試行しても無駄）
+                if matches!(e, Error::InvalidArgument(_) | Error::Unsupported(_)) {
+                    return Err(e);
+                }
+                if device_alive(&device) {
+                    // デバイスは生きている → 一時エラーなら少し待って再試行、駄目ならメディアエラー
+                    if alive_retries < ALIVE_RETRIES {
+                        alive_retries += 1;
+                        eprintln!(
+                            "一時エラーを検知（{alive_retries}/{ALIVE_RETRIES}）。再試行します: {e}"
+                        );
+                        std::thread::sleep(std::time::Duration::from_secs(5));
+                        resume = true;
+                        continue;
+                    }
+                    return Err(match e {
+                        Error::MediaError(_) | Error::DeviceLost(_) => e,
+                        other => Error::MediaError(other.to_string()),
+                    });
+                }
+
+                // デバイス消失
+                if reconnect == 0 {
+                    return Err(Error::DeviceLost(e.to_string()));
+                }
+                attempt += 1;
+                eprintln!(
+                    "デバイス消失を検知（試行 {attempt}/{MAX_RECONNECT_ATTEMPTS}）。{reconnect} 秒間 復帰を待ちます: {e}"
+                );
+                if let Some(cmd) = opts.recover_cmd.as_deref() {
+                    run_shell(cmd);
+                }
+                if wait_for_device(&device, reconnect) {
+                    eprintln!("デバイスが復帰しました。resume して継続します");
+                    resume = true;
+                    alive_retries = 0;
+                    if attempt >= MAX_RECONNECT_ATTEMPTS {
+                        return Err(Error::DeviceLost(format!(
+                            "再接続試行の上限（{MAX_RECONNECT_ATTEMPTS}）に達しました: {e}"
+                        )));
+                    }
+                    continue;
+                }
+                eprintln!("デバイスが復帰しませんでした（{reconnect} 秒待機）");
+                if let Some(cmd) = opts.on_stall_cmd.as_deref() {
+                    run_shell(cmd);
+                }
+                return Err(Error::DeviceLost(format!(
+                    "復帰待ちタイムアウト（{reconnect} 秒）: {e}"
+                )));
+            }
+        }
+    }
+}
+
+/// デバイスパスが存在し、INQUIRY に応答するか。
+#[cfg(target_os = "linux")]
+fn device_alive(path: &str) -> bool {
+    use friidump::drive::device::linux::LinuxSg;
+    use friidump::drive::dvd::DvdDrive;
+    std::path::Path::new(path).exists() && DvdDrive::<LinuxSg>::open(path, -1).is_ok()
+}
+
+/// デバイスが復帰するまで最大 `secs` 秒待つ。
+#[cfg(target_os = "linux")]
+fn wait_for_device(path: &str, secs: u32) -> bool {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(secs as u64);
+    loop {
+        if device_alive(path) {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_secs(2));
+    }
+}
+
+/// シェルコマンドを実行する（失敗しても致命的ではない）。
+#[cfg(target_os = "linux")]
+fn run_shell(cmd: &str) {
+    eprintln!("実行: {cmd}");
+    match std::process::Command::new("sh").arg("-c").arg(cmd).status() {
+        Ok(s) => eprintln!("コマンド終了: {s}"),
+        Err(e) => eprintln!("コマンド実行に失敗: {e}"),
+    }
+}
+
+/// 1 回分の吸い出し（open → 判定 → 校正 → dump）。
+#[cfg(target_os = "linux")]
+fn dump_once(opts: &Options, resume: bool) -> Result<()> {
     use friidump::constants::{
         DISC_GAMECUBE_SECTORS_NO, DISC_WII_SECTORS_NO_DL, DISC_WII_SECTORS_NO_SL,
     };
@@ -196,15 +314,18 @@ fn run_device(opts: &Options) -> Result<()> {
         if let Some(e) = opts.end_sector {
             dumper.set_end_sector(e);
         }
+        if let Some(n) = opts.journal_interval {
+            dumper.set_journal_interval(n);
+        }
         if let Some(p) = opts.raw_out.as_ref() {
-            dumper.set_raw_output(p, opts.resume)?;
+            dumper.set_raw_output(p, resume)?;
         }
         if let Some(p) = iso_out.as_ref() {
-            dumper.set_iso_output(p, opts.resume)?;
+            dumper.set_iso_output(p, resume)?;
         }
         let mut state = ProgressState::new(opts.gui);
         dumper.set_progress(Box::new(move |s, d, t| state.update(s, d, t)));
-        dumper.prepare(opts.resume)?;
+        dumper.prepare(resume)?;
         dumper.dump()?;
 
         if !opts.no_hashing {
@@ -224,6 +345,16 @@ fn run_device(opts: &Options) -> Result<()> {
                     );
                 }
             }
+        }
+    }
+
+    // 全ディスク（範囲指定なし）を完了したら完了マーカーを残す。
+    // スーパーバイザはこれを見て「完了」を判定し、再起動ループを止める。
+    if opts.start_sector.is_none() && opts.end_sector.is_none() {
+        for p in [opts.raw_out.as_ref(), iso_out.as_ref()].into_iter().flatten() {
+            let mut d = p.clone().into_os_string();
+            d.push(".done");
+            let _ = std::fs::write(std::path::PathBuf::from(d), b"done\n");
         }
     }
     Ok(())

@@ -49,6 +49,14 @@ pub struct Options {
     pub allmethods: bool,
     /// `-h/--help`。
     pub help: bool,
+    /// `--reconnect <sec>`: デバイス消失時に復帰を待つ秒数（0 または未指定で無効）。
+    pub reconnect_secs: Option<u32>,
+    /// `--recover-cmd <cmd>`: デバイス消失時に実行するシェルコマンド（例: uhubctl）。
+    pub recover_cmd: Option<String>,
+    /// `--on-stall <cmd>`: 復帰待ちタイムアウト時に実行するコマンド（例: systemctl reboot）。
+    pub on_stall_cmd: Option<String>,
+    /// `--journal-interval <n>`: ジャーナル書き込み間隔（セクタ）。
+    pub journal_interval: Option<u32>,
 }
 
 /// 引数を解析する。
@@ -94,7 +102,8 @@ pub fn parse(args: &[String]) -> Result<Options> {
         if let Some((name, val)) = split_long(arg) {
             match name {
                 "device" | "raw" | "iso" | "unscramble" | "command" | "startsector"
-                | "stopsector" | "size" | "speed" | "type" => {
+                | "stopsector" | "size" | "speed" | "type" | "reconnect" | "recover-cmd"
+                | "on-stall" | "journal-interval" => {
                     let v = val.or_else(|| take_next(args, &mut i)).ok_or_else(|| {
                         Error::InvalidArgument(format!("--{name} には引数が必要です"))
                     })?;
@@ -234,6 +243,10 @@ fn apply_value(o: &mut Options, name: &str, v: &str) -> Result<()> {
             }
             o.disctype = Some(t);
         }
+        "reconnect" => o.reconnect_secs = Some(num(v)?),
+        "recover-cmd" => o.recover_cmd = Some(v.to_string()),
+        "on-stall" => o.on_stall_cmd = Some(v.to_string()),
+        "journal-interval" => o.journal_interval = Some(num(v)?),
         _ => return Err(Error::InvalidArgument(format!("不明なオプション: {name}"))),
     }
     Ok(())
@@ -320,5 +333,23 @@ mod tests {
     fn unknown_option_errors() {
         assert!(parse(&s(&["--bogus"])).is_err());
         assert!(parse(&s(&["-Z"])).is_err());
+    }
+
+    #[test]
+    fn recovery_options() {
+        let o = parse(&s(&[
+            "--reconnect",
+            "600",
+            "--recover-cmd=uhubctl -a cycle -p 1",
+            "--on-stall",
+            "systemctl reboot",
+            "--journal-interval",
+            "1024",
+        ]))
+        .unwrap();
+        assert_eq!(o.reconnect_secs, Some(600));
+        assert_eq!(o.recover_cmd.as_deref(), Some("uhubctl -a cycle -p 1"));
+        assert_eq!(o.on_stall_cmd.as_deref(), Some("systemctl reboot"));
+        assert_eq!(o.journal_interval, Some(1024));
     }
 }

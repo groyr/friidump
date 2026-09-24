@@ -55,6 +55,12 @@ pub struct Unscrambler {
     slots: Vec<Slot>,
     bruteforce_seeds: bool,
     disctype: u8,
+    /// seed の各ビットが EDC に与える寄与（線形探索用の基底）。
+    ///
+    /// LFSR の出力（cipher）は seed に対して GF(2) 線形、EDC も線形なので、
+    /// `EDC(raw XOR cipher(seed)) = EDC(raw) XOR Σ_{k∈bits(seed)} basis[k]` が成り立つ。
+    /// これで 32768 通りの seed を 15 回の XOR で判定でき、総当たりより遥かに速い。
+    edc_basis: [u32; 15],
 }
 
 impl Unscrambler {
@@ -73,7 +79,37 @@ impl Unscrambler {
             slots,
             bruteforce_seeds: true,
             disctype: DISCTYPE_NINTENDO,
+            edc_basis: compute_edc_basis(),
         }
+    }
+
+    /// seed を線形探索で求める（見つからなければ None）。
+    ///
+    /// `test_seed` と等価な判定を、EDC の線形性を利用して高速に行う。
+    fn find_seed_linear(&self, raw: &[u8; RAW_BLOCK_SIZE]) -> Option<u16> {
+        let base = edc_calc(0, &raw[..EDC_LENGTH]);
+        let correct = u32::from_be_bytes([
+            raw[EDC_LENGTH],
+            raw[EDC_LENGTH + 1],
+            raw[EDC_LENGTH + 2],
+            raw[EDC_LENGTH + 3],
+        ]);
+        for seed in 0..SEED_BRUTEFORCE_LIMIT {
+            let mut acc = base;
+            let mut x = seed;
+            let mut k = 0;
+            while x != 0 {
+                if x & 1 == 1 {
+                    acc ^= self.edc_basis[k];
+                }
+                x >>= 1;
+                k += 1;
+            }
+            if acc == correct {
+                return Some(seed);
+            }
+        }
+        None
     }
 
     /// seed の総当たりを有効/無効にする（C 版 `unscrambler_set_bruteforce`）。
@@ -144,21 +180,25 @@ impl Unscrambler {
             }
         }
 
-        // 2) キャッシュに無ければ総当たりで探索し、見つかった seed をキャッシュする。
+        // 2) キャッシュに無ければ線形探索で seed を求め、余裕があればキャッシュする。
         if found.is_none() && self.bruteforce_seeds {
-            let mut j: u16 = 0;
-            while found.is_none() && j < SEED_BRUTEFORCE_LIMIT {
-                if test_seed(raw, j) {
-                    match self.add_seed(idx, j) {
-                        Some(i) => found = Some(i),
-                        None => {
-                            return Err(Error::Unscramble(
-                                "seed キャッシュの空きがありません".to_string(),
-                            ))
-                        }
+            if let Some(seed) = self.find_seed_linear(raw) {
+                match self.add_seed(idx, seed) {
+                    Some(i) => found = Some(i),
+                    None => {
+                        // キャッシュが満杯でも見つけた seed で直接復号する
+                        // （層2 は seed がブロック毎に変わりキャッシュが溢れるため）。
+                        let cipher = cipher_for_seed(seed);
+                        let ok = unscramble_frame(self.disctype, &cipher, raw, out);
+                        return if ok {
+                            Ok(true)
+                        } else {
+                            Err(Error::Unscramble(format!(
+                                "フレーム {sector_no} のスクランブル解除で EDC 不一致"
+                            )))
+                        };
                     }
                 }
-                j += 1;
             }
         }
 
@@ -256,6 +296,31 @@ impl Default for Unscrambler {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// seed から 1 セクタ分のストリーム暗号を生成する。
+fn cipher_for_seed(seed: u16) -> [u8; SECTOR_SIZE] {
+    let mut lfsr = Lfsr::new(seed);
+    let mut cipher = [0u8; SECTOR_SIZE];
+    for b in cipher.iter_mut() {
+        *b = lfsr.next_byte();
+    }
+    cipher
+}
+
+/// 線形探索用の EDC 基底（seed の各ビット k = 1<<k）を計算する。
+fn compute_edc_basis() -> [u32; 15] {
+    let mut basis = [0u32; 15];
+    for (k, slot) in basis.iter_mut().enumerate() {
+        let mut lfsr = Lfsr::new(1u16 << k);
+        // 生フレーム [12..2060] に cipher を置いた 2060 バイトの EDC
+        let mut buf = [0u8; EDC_LENGTH];
+        for b in buf[12..12 + SECTOR_SIZE].iter_mut() {
+            *b = lfsr.next_byte();
+        }
+        *slot = edc_calc(0, &buf);
+    }
+    basis
 }
 
 /// ブロックの先頭セクタの seed を EDC で検証する（C 版 `test_seed`）。

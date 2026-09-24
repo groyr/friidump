@@ -65,6 +65,11 @@ ISO[6:2048] = rd XOR corr[位相]
 - **フル吸い出し（ナルト4 / GC / 712,880 セクタ）**: ISO が redump と完全一致
   （CRC-32 `60aefa3e` / MD5 `20cdb87874ce4f2db4717fb43682e026` / SHA-1 `14ddb656…`）
 - 速度は同一範囲で C 実装の約 2 倍（4097 セクタで C 85.5s / Rust 40.2s）
+- **Wii DL（大乱闘スマッシュブラザーズX / RSBJ01 / 4,155,840 セクタ, layerbreak 2,084,960）**:
+  streaming READ で全点読み出し可・method12 で第1/第2層とも全セクタ EDC 通過を実機確認。
+  フル吸い出しの ISO が **redump（RSBJ01 Rev 1）と完全一致**:
+  CRC-32 `19a97809` / MD5 `9ea2c51b4821f8f630b5d930d98871bf` / SHA-1 `932d9e9bef67609d2bd15504bb5191a1079d8759`
+  （8,511,160,320 bytes）。プレーン READ は全 LBA で MEDIUM ERROR を返す（正常）
 
 ## 既知の制限・注意
 
@@ -84,6 +89,13 @@ ISO[6:2048] = rd XOR corr[位相]
 - GC はドライブの先読みキャッシュが stale になるため、**READ を 2 回発行**してから E7 を読む
   （method11/12 の前提）。単発 READ は無視される
 - 一部ディスクで特定 LBA が時々ゼロ/時々データになる（傷・汚れの可能性）
+- **プレーン READ は Nintendo ディスクで MEDIUM ERROR (key3/ASC0x11) を返す**（本ドライブ）。
+  これは異常ではなく、ECC が合わないため。**streaming ビット付き READ(12)** なら読める。
+  カーネル（udev/blkid）が `sr0` をプレーン READ して dmesg に medium error を出すのは無害。
+  「傷・汚れ」と誤認しやすいので注意
+- **無人復旧**: `--reconnect <sec>`（復帰待ち→自動 reopen/再校正/resume）、`--recover-cmd`
+  （切断時のフック）、`--on-stall`（タイムアウト時のフック）、`--journal-interval`（既定 8192）。
+  終了コード `0`=完了 / `10`=デバイス消失 / `11`=メディアエラー。完了時 `<out>.done`
 
 ## ビルド
 
