@@ -133,6 +133,18 @@
     - `-e` は「指定セクタを含む」実装（`-e end` は end を含む）。フル吸い出しの bit-exact 検証は
       USB ブリッジの不安定さにより未完（下記「既知の制限」参照）
 
+13. **`rust/friidump/` — C 実装の増分 Rust 移植（進行中）**
+    - 純粋コア（`ecma267`/`unscrambler`/`metadata`/`hasher`）、デバイス層（Linux SG_IO）、
+      `cache`/`read`/`disc`（method11/12）、`dumper`/`cli`/`main` を移植
+    - C から生成したゴールデンベクタ（`tests/vectors`）と仮想ドライブのモックでオフライン検証
+    - **Pi 実機で C 版と bit-exact**: method11/12 の ISO/RAW、CLI 吸い出し、`-u`、resume
+    - 実機速度は C 版の約 2 倍（同一 4097 セクタで C 85.5s / Rust 40.2s、user 57s / 13s）
+    - `-e` は **exclusive に統一**（C 版は inclusive。help 表記に合わせた是正）
+    - リファクタ: グローバル可変状態の排除・`Result` 伝播・安全なバッファ/オフセット・
+      未初期化変数シフト(R7)の是正・`exit()` 廃止
+    - 未実装: method0-10（他ドライブ用）/ Windows SPTI / `-A`
+    - ビルド・使い方は `AGENTS.md` の「Rust 移植」節を参照
+
 ## 既知の制限・注意
 
 - **Pi Zero W でドライブ接続時に Pi がハング → `dwc_otg.fiq_enable=0` で解消**（2026-09-24）
