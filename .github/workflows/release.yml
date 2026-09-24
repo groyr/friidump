@@ -14,32 +14,18 @@ permissions:
 jobs:
   windows-x64:
     runs-on: windows-latest
-    defaults:
-      run:
-        shell: msys2 {0}
     steps:
       - uses: actions/checkout@v4
-      - uses: msys2/setup-msys2@v2
-        with:
-          msystem: UCRT64
-          update: true
-          install: >-
-            mingw-w64-ucrt-x86_64-gcc
-            mingw-w64-ucrt-x86_64-cmake
-            mingw-w64-ucrt-x86_64-ninja
-            zip
-      - name: Configure
-        run: |
-          cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_STATIC_BINARY=ON \
-                -DHAVE_STDBOOL_H=1 -DHAVE_FSEEKO=1 -DCMAKE_WORDS_BIGENDIAN=0 -B build
+      - uses: dtolnay/rust-toolchain@stable
       - name: Build
-        run: cmake --build build
+        run: cargo build --release
       - name: Package
+        shell: bash
         run: |
           mkdir -p dist
-          cp build/src/friidump.exe dist/
+          cp target/release/friidump.exe dist/
           cp README COPYING AUTHORS dist/
-          (cd dist && zip -r ../friidump-${GITHUB_REF_NAME}-win64.zip .)
+          (cd dist && 7z a ../friidump-${GITHUB_REF_NAME}-win64.zip .)
       - uses: actions/upload-artifact@v4
         with:
           name: win64
@@ -49,27 +35,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # QEMU で armv6 コンテナを動かし、真の armv6 バイナリをネイティブビルドする。
-      # （x86 の arm-linux-gnueabihf クロスツールチェーンは armv7 の libc をリンクするため
-      #   Pi Zero (armv6) で Illegal instruction になる）
-      - uses: docker/setup-qemu-action@v3
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          platforms: arm
-      - name: Build in armv6 container
-        run: |
-          docker run --rm --platform linux/arm/v6 \
-            -v "$PWD:/src" -w /src arm32v6/alpine:3.20 \
-            sh -c 'apk add --no-cache build-base cmake linux-headers && \
-              cmake -DCMAKE_BUILD_TYPE=Release -DBUILD_STATIC_BINARY=ON \
-                    -DHAVE_STDBOOL_H=1 -DHAVE_FSEEKO=1 -DHAVE_FTELLO=1 \
-                    -DHAVE_FSEEK64=0 -DHAVE_FTELL64=0 \
-                    -DCMAKE_WORDS_BIGENDIAN=0 \
-                    -DCMAKE_EXE_LINKER_FLAGS="-static" -B build-armv6 && \
-              cmake --build build-armv6'
+          targets: arm-unknown-linux-gnueabihf
+      # cross（Docker + QEMU）で armv6（Raspberry Pi Zero / armhf）バイナリをビルドする。
+      - uses: taiki-e/install-action@cross
+      - name: Build (armv6)
+        run: cross build --release --target arm-unknown-linux-gnueabihf
       - name: Package
         run: |
           mkdir -p dist
-          cp build-armv6/src/friidump dist/
+          cp target/arm-unknown-linux-gnueabihf/release/friidump dist/
           cp README COPYING AUTHORS dist/
           (cd dist && zip -r ../friidump-${GITHUB_REF_NAME}-linux-armv6.zip .)
       - uses: actions/upload-artifact@v4

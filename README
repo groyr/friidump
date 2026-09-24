@@ -1,6 +1,10 @@
 FriiDump - A program to dump Nintendo Wii and GameCube disc
 ===============================================================================
 
+This repository is a Rust reimplementation of FriiDump (originally a C program
+by Arep). It dumps Nintendo Wii and GameCube discs and currently targets Linux
+(including Raspberry Pi / armv6).
+
 FriiDump is a program that lets you dump Nintendo Wii and GameCube disc from
 your computer, without using original Nintendo hardware. It basically performs
 the same functions as the famous "RawDump" program, but with a big difference,
@@ -63,9 +67,9 @@ Currently supported drives are:
 - LG GDR-8163B (HL-DT-ST/DVD-ROM GDR8163B)
 - LG GDR-8164B (HL-DT-ST/DVD-ROM GDR8164B)
 
-This fork additionally treats the following Hitachi-LG (MN103S) drives as
+This program additionally treats the following Hitachi-LG (MN103S) drives as
 supported via the `0xe7` vendor memory-dump command. The base address and the
-default read method are drive-dependent (`libfriidump/drive_profile.c`):
+default read method are drive-dependent (`src/drive/profile.rs`):
 
 - HL-DT-ST RW/DVD GCC-4160N / GCC-4240N ... base `0xA13000`, default method12
   (fast; verified on real hardware)
@@ -79,32 +83,29 @@ Other drives might work, most likely those based on the Hitachi MN103
 microcontroller. If you find any of them, please report so that they can be
 added to the compatibility list.
 
-NOTE (this fork): GCC-4160N/GCC-4240N data frames are cached at `0xA13000`,
-not `0x80000000`; using the wrong base address makes dumping fail. This fork
-also implements fast read methods: `method11` (streaming reads + `0xe7` prefix
-reads + per-phase seed correction, ISO only) and `method12` (default: the same
-fast decode plus raw frame reconstruction from `0xe7` head/tail and per-block
-EDC verification, producing a DIC/redump-compatible scrambled raw image). See
+NOTE: GCC-4160N/GCC-4240N data frames are cached at `0xA13000`, not
+`0x80000000`; using the wrong base address makes dumping fail. Fast read
+methods implemented here are `method11` (streaming reads + `0xe7` prefix reads
++ per-phase seed correction, ISO only) and `method12` (default: the same fast
+decode plus raw frame reconstruction from `0xe7` head/tail and per-block EDC
+verification, producing a DIC/redump-compatible scrambled raw image). See
 `--method11` / `--method12` and `PATCHES.md` for all changes, known limitations
-(USB bridge cache desync, ~62 min per GC disc) and build instructions
-(Linux/armv6, MinGW).
+(USB bridge cache desync, ~62 min per GC disc) and build instructions.
 
 
 ===============================================================================
 Download
 ===============================================================================
-Prebuilt binaries for this fork are available on the GitHub Releases page:
+Prebuilt binaries are published on this repository's Releases page:
 
-  https://github.com/groyr/friidump/releases
-
-- friidump-<version>-win64.zip       ... Windows 64-bit (friidump.exe, static)
+- friidump-<version>-win64.zip       ... Windows 64-bit (friidump.exe)
 - friidump-<version>-linux-armv6.zip ... Raspberry Pi Zero / armv6
 
 Releases are built automatically by GitHub Actions when a version tag (e.g.
-`0.5.3.2`, or `v*`) is pushed.
+`v*`) is pushed.
 
-This fork's version is **0.6.0** (based on upstream FriiDump 0.5.3.1). **Wii dual-layer (DL) discs are
-supported** by the fork's read methods: the second layer's sector-number offset
+This project's version is **0.6.0** (based on upstream FriiDump 0.5.3.1). **Wii dual-layer (DL) discs are
+supported** by the implemented read methods: the second layer's sector-number offset
 is detected and a per-layer descramble calibration is used. DL dumping is
 experimental and needs a reliable USB bridge (see `AGENTS.md`, "Known issues").
 method13 remains a stub for Hitachi Type2 drives; see PATCHES.md.
@@ -113,42 +114,22 @@ method13 remains a stub for Hitachi Type2 drives; see PATCHES.md.
 ===============================================================================
 Installation
 ===============================================================================
-If you are a Windows user, probably you will have downloaded the binaries,
-either zipped or together with an installer, so the installation should be
-straightforward.
+If you downloaded a prebuilt binary, just run it (Windows, or Linux/armv6).
 
-If you downloaded the sources, you will need to compile them. FriiDump uses
-CMake, for easy portability, so you will need to get it from cmake.org. On
-Windows, MSYS2/MinGW-w64 (UCRT64) and Visual Studio are supported (this fork's
-Windows builds use MSYS2/UCRT64). On UNIX just do the following, from the
-directory where you unpacked the sources into:
+If you want to build from source, install the Rust toolchain (rustup) and run,
+from the repository root:
 
-$ mkdir BUILD
-$ cd BUILD
-$ cmake ..
-$ make
-$ make install
+$ cargo build --release
 
-Linux-specific note: the vendor memory-dump command (`0xe7`) must be issued to
-the SCSI generic character device (`/dev/sgN`), opened O_RDWR. Being a member of
-the "cdrom" group is usually enough; the setuid trick described by upstream is
-NOT required for `0xe7` on `/dev/sgN`.
+The binary is produced at `target/release/friidump`.
 
-For reference, upstream's privilege note (mainly for non-`0xe7` drives):
-- Run FriiDump as root: discouraged.
-- Run it through sudo: better but nevertheless discouraged.
-- Set the setuid bit on the executable: this is the recommended way to run
-  FriiDump under Linux. This way, the code run with superuser privileges will
-  be reduced to a minimum, guaranteeing a certain level of security (note that
-  security-related bugs might exist anyway!!!). Also note that, even when the
-  setuid bit is set, the attempt to open the drive for reading will be done
-  after privileges have been dropped, so you will need explicit read access to
-  the DVD-ROM drive. Usually having the system administrator add you to the
-  "cdrom" group is enough. To set the setuid bit on the executable, run as
-  root:
-
-  $ chown root:root /usr/local/bin/friidump
-  $ chmod u+s /usr/local/bin/friidump
+- Linux: dumping uses SG_IO on the SCSI generic character device (`/dev/sgN`),
+  so a Linux system is required for dumping. Being a member of the "cdrom" group
+  is usually enough (no root / setuid required, unlike the original C version).
+- Raspberry Pi Zero (armv6): build natively with the default
+  `arm-unknown-linux-gnueabihf` target on Raspberry Pi OS.
+- Windows: the source builds, but the device backend is not implemented yet
+  (dumping is Linux-only for now).
 
 
 ===============================================================================
@@ -171,7 +152,7 @@ On Linux, pass the SCSI generic character device (for example `-d /dev/sg0`),
 not the block device (`/dev/sr0`): the `0xe7` vendor command is rejected on block
 devices without CAP_SYS_RAWIO. Use `-g` for machine-readable progress output.
 
-Read methods 10-12 are implemented for Hitachi-LG (MN103S) drives (method13 is
+Read methods 11-12 are implemented for Hitachi-LG (MN103S) drives (method13 is
 a stub for Hitachi Type2). The default for GCC-4160N/GCC-4240N is method12
 (fast decode + raw frame + per-block EDC). See PATCHES.md for the method details.
 
@@ -182,7 +163,7 @@ Finally, use -h for a listing of all available options.
 Performance
 ===============================================================================
 The table below is from upstream FriiDump (measured on a PC with a different
-drive) and does NOT reflect this fork.
+drive) and does NOT reflect this project.
 
 Upstream reference (PC, Athlon64 3200+):
 -------------------------------------------------------------------------------
@@ -194,7 +175,7 @@ Upstream reference (PC, Athlon64 3200+):
 |    4     |  ~1250 MB/h  |         1.2 hours         |        3.5 hours      |
 -------------------------------------------------------------------------------
 
-This fork (HL-DT-ST GCC-4240N via an Initio USB bridge, Raspberry Pi Zero W):
+This project (HL-DT-ST GCC-4240N via an Initio USB bridge, Raspberry Pi Zero W):
 - The default read method for GCC-4160N/GCC-4240N is method12 (fast decode +
   raw frame reconstruction + per-block EDC verification).
 - Measured throughput is about 0.3 MB/s for GameCube discs. The USB bridge

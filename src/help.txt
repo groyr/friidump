@@ -1,0 +1,29 @@
+FriiDump - GameCube/Wii ディスク吸い出しツール
+
+使い方:
+  friidump [オプション]
+
+主なオプション:
+  -h, --help                     このヘルプを表示
+  -a, --autodump                 自動命名で ISO に吸い出し（resume 有効）
+  -g, --gui                      GUI 向けの進捗表示
+  -d, --device <device>          デバイス（例: /dev/sg0）
+  -p, --stop                     回転を停止
+  -c, --command <nr>             メモリダンプコマンドを強制 (0-4)
+  -x, --speed <x>                streaming 速度
+  -T, --type <nr>                ディスク種別を強制 (0=GC,1=Wii,2=Wii_DL,3=DVD)
+  -t, --startsector <n>          このセクタから読み出す（出力は先頭から）
+  -e, --stopsector <n>           このセクタの手前まで（exclusive）
+  -S, --size <sectors>           総セクタ数を強制
+  -r, --raw <file>               raw (2064B/セクタ) で出力
+  -i, --iso <file>               ISO (2048B/セクタ) で出力
+  -u, --unscramble <file>        raw を ISO に変換
+  -H, --nohash                   ハッシュを計算しない
+  -s, --resume                   部分吸い出しを再開
+  -0..-6, --method0..6[=req,exp] 通常/ストリーミング方式
+  -7, -8, -9, --method7..9       Hitachi 方式
+  -J, --method10                 Hitachi 0xA13000
+  -K, --method11                 fast 方式
+  -L, --method12                 fast + raw + 全ブロック EDC（既定・推奨）
+  -M, --method13                 Hitachi Type2（未実装）
+  -A, --allmethods               全 method を試す（未実装）

@@ -1,16 +1,6 @@
-CMakeCache.txt
-CMakeFiles
-Makefile
-cmake_install.cmake
-install_manifest.txt
-build/
-build-win/
-build-win2/
-__pycache__/
-*.o
-*.a
-*.so
-*.exe
 # Rust
-/rust/**/target/
-/rust/target/
+/target/
+
+# Python (tools/probe)
+__pycache__/
+*.pyc
