@@ -8,13 +8,16 @@
 //! - グローバル可変状態を排除し、状態は構造体が所有する（リファクタ項目 R1）
 //! - 失敗は `Result` で伝播する（リファクタ項目 R2）
 
+pub mod cache;
 pub mod constants;
+pub mod disc;
 pub mod drive;
 pub mod ecma267;
 pub mod error;
 pub mod hasher;
 pub mod log;
 pub mod metadata;
+pub mod read;
 pub mod unscrambler;
 
 pub use error::{Error, Result};

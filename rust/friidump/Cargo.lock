@@ -66,6 +66,7 @@ name = "friidump"
 version = "0.1.0"
 dependencies = [
  "crc32fast",
+ "libc",
  "md-5",
  "sha1",
 ]
