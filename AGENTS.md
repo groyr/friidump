@@ -82,6 +82,47 @@ cmake --build build-win
 - 実データ速度: 第1層 ~0.3MB/s、第2層 method11 は校正後 ~0.44MB/s
 - **method12 の第2層は 0.0002MB/s**（実用不可）、method0/2 は 0.017MB/s（実用不可）
 
+## Rust 移植（`rust/friidump`、進行中）
+
+上流 C 実装を増分移植した Rust 版。GCC-4240N の method11/12 について、Pi 実機で
+C 版と **bit-exact**（ISO/RAW の MD5・CRC32 一致）を確認済み。
+
+### ビルド・テスト
+
+```sh
+cd rust/friidump
+cargo test                # 単体 45 + ゴールデン 4
+cargo build --release     # → target/release/friidump-rs
+```
+
+- Pi(armv6) ネイティブビルド可（rustup の `arm-unknown-linux-gnueabihf`）
+- debug は総当たりが遅いため、実機は `--release` 推奨（`cargo test` は debug で可）
+
+### 使い方（C 版互換）
+
+```sh
+# 吸い出し（method12、部分範囲）
+target/release/friidump-rs -d /dev/sg0 -T 0 -L -t 0 -e 2049 -r out.raw -i out.iso
+# raw → ISO 変換
+target/release/friidump-rs -u out.raw -i out.iso
+```
+
+- `-e` は **exclusive**（C 版は inclusive。help 表記に合わせて是正、リファクタ R5）
+- 実機速度は C 版の約 2 倍（同一範囲 4097 セクタで C 85.5s / Rust 40.2s、user 時間 57s / 13s）
+
+### 構成
+
+| モジュール | 内容 |
+|---|---|
+| `ecma267` / `unscrambler` | EDC/LFSR・seed クラック・復号 |
+| `metadata` / `hasher` | セクタ 0 解析・CRC32/MD5/SHA-1 |
+| `drive/{mmc,profile,device,dvd}` | CDB・ドライブ特性・SG_IO・INQUIRY/READ/E7 |
+| `cache` / `read` / `disc` | ブロックキャッシュ・方式パラメータ・method11/12 |
+| `dumper` / `cli` / `main` | 出力・ジャーナル・resume・CLI |
+| `tests/golden.rs` + `tools/gen_vectors.c` | C 由来ゴールデンベクタ |
+
+未実装: method0-10（他ドライブ用）/ Windows SPTI / `-A`。
+
 ## 既知の問題（重要）
 
 ### 1. USB ブリッジ（Initio 13FD:1040）の切断 — 最優先の課題
@@ -133,13 +174,11 @@ cmake --build build-win
 1. **USB ブリッジの置き換え**（DL 吸い出しの前提。本フォーク最大の課題）
 2. **出力 I/O のスレッド分離**: `dumper.c` は読み出しと書き込みが同一ループで直列。
    別スレッド化（pthread）でドライブ律速を改善できる余地
-3. **全面 Rust 書き換え（検討中・時期未定）**
-   - 動機: メモリ安全（バッファ境界/EDC オフセット）、`Result` によるエラー処理、
-     `#[test]` で unscrambler/EDC/seed を CI 常時実行、`sg3`/`nix` による型付き SG_IO
-   - 留意: **吸い出しはドライブ律速で性能利得はほぼ無い**。最大コストは
-     **実機で確立した method10-13・校正・0xe7 知見の再検証**。
-     着手するなら「吸い出しは C のまま、RVZ/ホスト側を Rust」等の部分適用が現実的
-4. **CI テスト**: unscrambler/EDC/CRC32 のホスト単体テストを CI で常時実行
+3. **Rust 移植（`rust/friidump`）— 主要部は完了**
+   - GCC-4240N の method11/12・吸い出し・`-u`・resume は実機で C と bit-exact
+   - Pi(armv6) ネイティブで動作し、実機速度は C 版の約 2 倍
+   - 残り: method0-10（他ドライブ用）・Windows SPTI・`-A`・CI 化
+4. **CI テスト**: `cargo test`（unscrambler/EDC/seed/ゴールデンベクタ）を CI で常時実行
 5. **警告強化**: `-Wextra`（必要なら `-Werror`）、`-flto` の検討
 6. **`0xE7` のドライブ別対応**: GDR-8082N 等の Type2（`0x80000000` 系）実機確定
 7. **Wii DL の redump 照合**: 良質なブリッジ入手後に bit-exact を検証

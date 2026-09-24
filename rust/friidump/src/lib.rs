@@ -9,9 +9,11 @@
 //! - 失敗は `Result` で伝播する（リファクタ項目 R2）
 
 pub mod cache;
+pub mod cli;
 pub mod constants;
 pub mod disc;
 pub mod drive;
+pub mod dumper;
 pub mod ecma267;
 pub mod error;
 pub mod hasher;

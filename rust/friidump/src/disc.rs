@@ -94,10 +94,15 @@ impl<D: ScsiDevice> Disc<D> {
         })
     }
 
-    /// 読み出し方式を設定する。
-    pub fn set_read_method(&mut self, method: ReadMethod) -> Result<()> {
+    /// 読み出し方式を設定する（`sec_disc`/`sec_mem` は任意で上書き）。
+    pub fn set_read_method(
+        &mut self,
+        method: ReadMethod,
+        sec_disc: Option<u32>,
+        sec_mem: Option<u32>,
+    ) -> Result<()> {
         self.read_method = method;
-        self.params = compute_params(method, None, None)?;
+        self.params = compute_params(method, sec_disc, sec_mem)?;
         Ok(())
     }
 
@@ -128,9 +133,7 @@ impl<D: ScsiDevice> Disc<D> {
         }
     }
 
-    /// 読み込み済みセクタの `(data, raw)` を返す（C 版 `disc_read_sector` の出力に相当）。
-    ///
-    /// `data` はスクランブル解除済み 2048 バイト、`raw` は 2064 バイト。
+    /// 読み込み済みブロックの `(data, raw)` を返す（C 版 `disc_read_sector` の出力に相当）。
     pub fn sector(&self, sector_no: u32) -> Option<(&[u8; BLOCK_SIZE], &[u8; RAW_BLOCK_SIZE])> {
         let block = sector_no / SECTORS_PER_BLOCK as u32;
         self.cache.lookup(block)
@@ -657,7 +660,7 @@ mod tests {
         let mut disc = Disc::new(drive).unwrap();
         disc.disc_type = DiscType::GameCube;
         disc.set_unscrambling(true);
-        disc.set_read_method(method).unwrap();
+        disc.set_read_method(method, None, None).unwrap();
         disc
     }
 
@@ -672,7 +675,6 @@ mod tests {
     #[test]
     fn method11_recovers_iso() {
         let mut disc = make_disc(ReadMethod::M11);
-        // 校正(16..31) とデータブロック(20) を含む範囲を読む
         for sector in [0u32, 16 * 20, 16 * 21] {
             disc.read_sector(sector).unwrap();
         }
@@ -690,14 +692,12 @@ mod tests {
         }
         let (data, raw) = disc.sector(16 * 20).unwrap();
         assert_eq!(data, &expected_block(20));
-        // raw は真スクランブル像: raw[12:2060] XOR gc_cipher == ISO[6:2048]
-        // ここでは raw[6:12] == ISO[0:6] と raw[12..] の整合を簡易確認
+        // raw は真スクランブル像: 先頭 6B は ISO と一致
         assert_eq!(&raw[6..12], &data[..6]);
     }
 
     #[test]
     fn method11_offline_calibration_only() {
-        // block0 は raw 経路（seed 例外）
         let mut disc = make_disc(ReadMethod::M11);
         disc.read_sector(0).unwrap();
         let (data, _) = disc.sector(0).unwrap();
