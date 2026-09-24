@@ -105,9 +105,14 @@ impl<D: ScsiDevice> DvdDrive<D> {
     }
 
     /// READ(12) を発行する（センス付き。C 版 `dvd_read_sector_dummy`）。
+    ///
+    /// C 版と同様に常に受信用バッファを渡す（intbuf 64KB 相当）。空バッファ
+    /// （`dxfer_len=0` / `SG_DXFER_NONE`）では READ が実行されずセンスが得られないため、
+    /// ディスク種別の自動判定が機能しない。
     pub fn read_sector_dummy(&mut self, sector: u32, sectors: u32) -> Result<ScsiOutcome> {
         let cmd = mmc::read12_dummy(sector, sectors);
-        self.device.execute(&cmd, &mut [])
+        let mut buf = vec![0u8; 64 * 1024];
+        self.device.execute(&cmd, &mut buf)
     }
 
     /// READ(12) streaming を発行する（C 版 `dvd_read_sector_streaming`）。
@@ -309,6 +314,8 @@ mod tests {
         outcomes: VecDeque<(bool, Vec<u8>)>,
         /// 実行された CDB を記録。
         pub seen: Vec<[u8; 12]>,
+        /// 直近の execute に渡されたデータバッファ長。
+        pub last_data_len: usize,
     }
 
     impl MockDevice {
@@ -316,6 +323,7 @@ mod tests {
             Self {
                 outcomes: responses.into(),
                 seen: Vec::new(),
+                last_data_len: 0,
             }
         }
     }
@@ -323,6 +331,7 @@ mod tests {
     impl ScsiDevice for MockDevice {
         fn execute(&mut self, command: &Command, data: &mut [u8]) -> Result<ScsiOutcome> {
             self.seen.push(command.cdb);
+            self.last_data_len = data.len();
             let (failed, resp) = self.outcomes.pop_front().unwrap_or((false, Vec::new()));
             let n = resp.len().min(data.len());
             data[..n].copy_from_slice(&resp[..n]);
@@ -386,5 +395,20 @@ mod tests {
         // 2 命令目は base + 33024 = 0xA1B100
         let d1 = d.device.seen[1];
         assert_eq!(&d1[6..10], &[0x00, 0xA1, 0xB1, 0x00]);
+    }
+
+    #[test]
+    fn dummy_read_passes_data_buffer() {
+        // 範囲外 READ は CHECK CONDITION を返す想定（failed=true）
+        let m = MockDevice::new(vec![(true, Vec::new())]);
+        let mut d = DvdDrive::new(m, -1);
+        let out = d.read_sector_dummy(712_980, 16).unwrap();
+        assert!(out.failed);
+        let cdb = d.device.seen[0];
+        assert_eq!(cdb[0], 0xA8); // READ(12)
+        assert_eq!(cdb[1], 0x08); // FUA
+        assert_eq!(&cdb[6..10], &[0x00, 0x00, 0x00, 0x10]); // 16 セクタ
+                                                            // 空バッファ（dxfer_len=0）では READ が実行されないため、十分なバッファを渡すこと
+        assert!(d.device.last_data_len >= 16 * 2048);
     }
 }
