@@ -94,6 +94,23 @@ cmake --build build-win
 - 対策: **別の USB-IDE/SATA ブリッジ**を使う（`AGENTS.md`（cleanrip 側）にも記載）。
   長時間運用では**チャンク分割＋再挿し前提**が必要
 
+### 1b. Pi Zero W でドライブ接続時に Pi がハング → `dwc_otg.fiq_enable=0` で解消（2026-09-24）
+
+- 症状: ドライブを接続した**瞬間に Pi がハング**（USB 列挙ログすら残らない）。
+  RPi OS 既定のハードウェア watchdog（1分）で再起動するが、再起動時にドライブが
+  接続されたままだと再ハングし復帰しない（ドライブを外して電源再投入が必要）
+- 原因: Pi Zero W の `dwc_otg` コントローラと Initio INIC-1511L ブリッジの
+  相互作用。**ユーザ空間に到達する前**（カーネル内・USB 列挙段階）で停止する
+- **対策（有効・実機確認済み）**: `/boot/firmware/cmdline.txt` に
+  **`dwc_otg.fiq_enable=0`** を追加
+  - `dwc_otg.fiq_fsm_enable=0` だけ / `dwc_otg.speed=1` だけでは解消しない
+  - 反映後は `usb 1-1: new high-speed USB device ... Product: RW/DVD GCC-4240N` で正常列挙し、
+    `/dev/sg0`・`/dev/sr0` が生成される
+  - 速度影響は無視できる（吸い出し律速 ~0.44MB/s に対し USB 帯域は十分）
+- 併せて **journald 永続化**（`/var/log/journal` + `SyncIntervalSec=1s`）でクラッシュログを採取可能に
+- 注: カーネル/ファームは 2026-09-15 から不変。ソフト回帰ではなく
+  ハード/ドライバ相互作用の顕在化。同ブリッジは Windows(xHCI) では正常動作
+
 ### 2. ディスクの限界領域
 
 - Smash X の一部領域（LBA 88,672〜約126,000）が**時々ゼロ/時々データ**で不安定

@@ -135,6 +135,14 @@
 
 ## 既知の制限・注意
 
+- **Pi Zero W でドライブ接続時に Pi がハング → `dwc_otg.fiq_enable=0` で解消**（2026-09-24）
+  - 症状: 接続の瞬間に Pi が固まる（USB 列挙ログすら出ない）。watchdog で再起動するが
+    接続されたままだと再ハング。**ユーザ空間到達前の dwc_otg 内で停止**
+  - 対策: `/boot/firmware/cmdline.txt` に `dwc_otg.fiq_enable=0` を追加
+    - `dwc_otg.fiq_fsm_enable=0` 単独 / `dwc_otg.speed=1` 単独では解消しない
+    - 速度影響は無視できる（吸い出し律速 ~0.44MB/s）
+  - カーネル/ファームは 2026-09-15 から不変。ソフト回帰ではなくハード/ドライバ相互作用。
+    同ブリッジは Windows(xHCI) では正常動作
 - **USB ブリッジ（Initio 13FD:1040）は長時間の読み出しで USB から切断する**（最優先の課題）
   - 症状: `usb 1-1: device descriptor read/64, error -110` → `USB disconnect` →
     `usb1-port1: attempt power cycle`（**復帰せず、物理再挿しが必要**）
