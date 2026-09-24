@@ -109,6 +109,8 @@ target/release/friidump-rs -u out.raw -i out.iso
 
 - `-e` は **exclusive**（C 版は inclusive。help 表記に合わせて是正、リファクタ R5）
 - 実機速度は C 版の約 2 倍（同一範囲 4097 セクタで C 85.5s / Rust 40.2s、user 時間 57s / 13s）
+- **フル吸い出し検証（ナルト4 / GC / 712,880 セクタ）**: Rust 版の ISO が redump と
+  **CRC-32 `60aefa3e` / MD5 `20cdb87874ce4f2db4717fb43682e026` / SHA-1 `14ddb656…` で完全一致**
 
 ### 構成
 

@@ -138,6 +138,8 @@
       `cache`/`read`/`disc`（method11/12）、`dumper`/`cli`/`main` を移植
     - C から生成したゴールデンベクタ（`tests/vectors`）と仮想ドライブのモックでオフライン検証
     - **Pi 実機で C 版と bit-exact**: method11/12 の ISO/RAW、CLI 吸い出し、`-u`、resume
+    - **フル吸い出し検証（ナルト4 / GC / 712,880 セクタ）**: Rust 版の ISO が redump と
+      **CRC-32 `60aefa3e` / MD5 `20cdb87874ce4f2db4717fb43682e026` / SHA-1 `14ddb656…` で完全一致**
     - 実機速度は C 版の約 2 倍（同一 4097 セクタで C 85.5s / Rust 40.2s、user 57s / 13s）
     - `-e` は **exclusive に統一**（C 版は inclusive。help 表記に合わせた是正）
     - リファクタ: グローバル可変状態の排除・`Result` 伝播・安全なバッファ/オフセット・
